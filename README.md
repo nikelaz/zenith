@@ -1,4 +1,4 @@
-# Nadir 
+# Zenith
 
-A cross-platform agent harness orchestrator desktop application.
+An LLM harness orchestrator that is native and a joy to use.
 
