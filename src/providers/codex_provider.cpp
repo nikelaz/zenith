@@ -11,6 +11,15 @@
 using Json = nlohmann::json;
 
 namespace {
+const std::vector<PermissionOption>& codex_permission_modes() {
+    static const std::vector<PermissionOption> modes = {
+        {"read-only", "Read only", "Allow reading files without making changes."},
+        {"workspace-write", "Workspace", "Allow changes within the working directory."},
+        {"danger-full-access", "Full access", "Allow access beyond the working directory."},
+    };
+    return modes;
+}
+
 std::string string_value(const Json& value, const char* key) {
     return value.contains(key) && value[key].is_string() ? value[key].get<std::string>()
                                                          : std::string{};
@@ -325,6 +334,8 @@ std::vector<ModelOption> fetch_codex_models(CodexState* state,
             state->startup_process = nullptr;
     }
     child_process_stop(&process);
+    for (ModelOption& model : models)
+        model.permission_modes = codex_permission_modes();
     return models;
 }
 
@@ -411,6 +422,20 @@ Result run_codex(CodexState* state, const TurnRequest* request,
             turn_params["model"] = request->model;
         if (!request->reasoning_effort.empty())
             turn_params["effort"] = request->reasoning_effort;
+        if (request->permission_mode == "read-only") {
+            turn_params["sandboxPolicy"] = {
+                {"type", "readOnly"}, {"networkAccess", false}};
+        } else if (request->permission_mode == "workspace-write") {
+            Json writable_roots = Json::array();
+            if (!request->working_directory.empty())
+                writable_roots.push_back(request->working_directory.string());
+            turn_params["sandboxPolicy"] = {
+                {"type", "workspaceWrite"}, {"writableRoots", writable_roots},
+                {"networkAccess", false}, {"excludeTmpdirEnvVar", false},
+                {"excludeSlashTmp", false}};
+        } else if (request->permission_mode == "danger-full-access") {
+            turn_params["sandboxPolicy"] = {{"type", "dangerFullAccess"}};
+        }
         if (!request->working_directory.empty())
             turn_params["cwd"] = request->working_directory.string();
         success = write_message(process.input,
@@ -479,7 +504,8 @@ Result start_codex(Provider* provider) {
     CodexState* state = static_cast<CodexState*>(provider->state);
     provider->default_model = state->options.default_model;
     provider->models.push_back({state->options.default_model,
-                                state->options.default_model, {}, {}});
+                                state->options.default_model, {}, {}, {},
+                                codex_permission_modes()});
     if (state->options.execute == nullptr)
         provider_runtime_set_initialize(&state->runtime, initialize_codex);
     else

@@ -10,6 +10,7 @@ struct ChatPanelState {
     std::size_t selected_provider = 0;
     std::string selected_model;
     std::string selected_reasoning_effort;
+    std::string selected_permission_mode;
     bool is_generating = false;
     TurnId active_turn_id = 0;
     TurnId next_turn_id = 1;

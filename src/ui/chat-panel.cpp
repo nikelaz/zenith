@@ -802,6 +802,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
     std::size_t& selected_provider = panel_state.selected_provider;
     std::string& selected_model = panel_state.selected_model;
     std::string& selected_reasoning_effort = panel_state.selected_reasoning_effort;
+    std::string& selected_permission_mode = panel_state.selected_permission_mode;
     bool& is_generating = panel_state.is_generating;
     TurnId& active_turn_id = panel_state.active_turn_id;
     TurnId& next_turn_id = panel_state.next_turn_id;
@@ -814,6 +815,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                 provider = providers[index].get();
                 selected_model = provider->default_model;
                 selected_reasoning_effort.clear();
+                selected_permission_mode.clear();
                 break;
             }
         }
@@ -828,6 +830,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                 [&](const ModelOption& model) { return model.id == provider->default_model; });
             selected_model = (preferred == provider->models.end() ? provider->models.front() : *preferred).id;
             selected_reasoning_effort.clear();
+            selected_permission_mode.clear();
         }
         const auto active = std::find_if(provider->models.begin(), provider->models.end(),
             [&](const ModelOption& model) { return model.id == selected_model; });
@@ -838,6 +841,13 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                 });
             if (selected_reasoning_effort.empty() || !effort_supported)
                 selected_reasoning_effort = active->default_reasoning_effort;
+            const bool permission_supported = selected_permission_mode.empty() ||
+                std::any_of(active->permission_modes.begin(), active->permission_modes.end(),
+                    [&](const PermissionOption& option) {
+                        return option.value == selected_permission_mode;
+                    });
+            if (!permission_supported)
+                selected_permission_mode = active->default_permission_mode;
         }
     }
     ImGui::Begin("Chat");
@@ -994,8 +1004,8 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         const float selector_y = divider_y + (footer_height - ImGui::GetFrameHeight()) * 0.5f;
         const float selector_x = input_pos.x + outer_padding;
         const float selector_available = std::max(0.0f, send_pos.x - selector_x - 12.0f);
-        const float model_width = std::min(190.0f, selector_available * 0.62f);
-        const float reasoning_width = std::min(140.0f, std::max(0.0f, selector_available - model_width - 8.0f));
+        const float model_width = std::min(190.0f, selector_available * 0.48f);
+        const float reasoning_width = std::min(140.0f, std::max(0.0f, selector_available * 0.28f));
         const auto active_model = std::find_if(provider->models.begin(), provider->models.end(),
             [&](const ModelOption& model) { return model.id == selected_model; });
         if (active_model != provider->models.end() && model_width >= 60.0f) {
@@ -1017,6 +1027,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                                 provider = &candidate;
                                 selected_model = model.id;
                                 selected_reasoning_effort = model.default_reasoning_effort;
+                                selected_permission_mode = model.default_permission_mode;
                             }
                             if (is_selected)
                                 ImGui::SetItemDefaultFocus();
@@ -1053,6 +1064,43 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                         }
                     }
                     ImGui::EndCombo();
+                }
+            }
+            if (reasoning_model != provider->models.end() &&
+                !reasoning_model->permission_modes.empty()) {
+                const float permission_width = std::min(
+                    140.0f, std::max(0.0f, selector_available - model_width -
+                                            reasoning_width - 16.0f));
+                if (permission_width >= 60.0f) {
+                    const PermissionOption* selected_permission = nullptr;
+                    for (const PermissionOption& option : reasoning_model->permission_modes) {
+                        if (option.value == selected_permission_mode) {
+                            selected_permission = &option;
+                            break;
+                        }
+                    }
+                    const char* permission_label = selected_permission == nullptr
+                        ? "Default" : selected_permission->name.c_str();
+                    ImGui::SetCursorScreenPos(ImVec2(
+                        selector_x + model_width + 8.0f + reasoning_width + 8.0f,
+                        selector_y));
+                    ImGui::SetNextItemWidth(permission_width);
+                    ImGui::BeginDisabled(is_generating);
+                    if (ImGui::BeginCombo("##permission-selector", permission_label)) {
+                        if (ImGui::Selectable("Default", selected_permission_mode.empty()))
+                            selected_permission_mode = reasoning_model->default_permission_mode;
+                        for (const PermissionOption& option : reasoning_model->permission_modes) {
+                            const bool is_selected = option.value == selected_permission_mode;
+                            if (ImGui::Selectable(option.name.c_str(), is_selected))
+                                selected_permission_mode = option.value;
+                            if (is_selected)
+                                ImGui::SetItemDefaultFocus();
+                            if (ImGui::IsItemHovered() && !option.description.empty())
+                                ImGui::SetTooltip("%s", option.description.c_str());
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::EndDisabled();
                 }
             }
         }
@@ -1108,6 +1156,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             request.working_directory = project.directory;
             request.model = selected_model;
             request.reasoning_effort = selected_reasoning_effort;
+            request.permission_mode = selected_permission_mode;
             request.turn_id = next_turn_id++;
             const Result submitted = provider->submit(provider, std::move(request));
             if (submitted.status == ResultStatus::Error) {

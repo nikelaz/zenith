@@ -282,7 +282,7 @@ void append_model_options(const Json& options, std::vector<ModelOption>* models)
                                                 return model.id == id;
                                             });
         if (duplicate == models->end())
-            models->push_back({id, name.empty() ? id : name, {}, {}});
+            models->push_back({id, name.empty() ? id : name, {}, {}, {}, {}});
     }
 }
 
@@ -517,7 +517,7 @@ void process_github_copilot(void* context, const TurnRequest* request,
 Result start_github_copilot(Provider* provider) {
     CopilotState* state = static_cast<CopilotState*>(provider->state);
     provider->default_model = state->options.default_model;
-    provider->models.push_back({provider->default_model, "Auto", {}, {}});
+    provider->models.push_back({provider->default_model, "Auto", {}, {}, {}, {}});
     if (state->options.execute == nullptr)
         provider_runtime_set_initialize(&state->runtime, initialize_github_copilot);
     else

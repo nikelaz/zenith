@@ -19,11 +19,19 @@ struct ReasoningOption {
     std::string description;
 };
 
+struct PermissionOption {
+    std::string value;
+    std::string name;
+    std::string description;
+};
+
 struct ModelOption {
     std::string id;
     std::string name;
     std::string default_reasoning_effort;
     std::vector<ReasoningOption> reasoning_efforts;
+    std::string default_permission_mode;
+    std::vector<PermissionOption> permission_modes;
 };
 
 enum class EventKind {
@@ -66,6 +74,7 @@ struct TurnRequest {
     std::string model;
     std::string provider_thread_id;
     std::string reasoning_effort;
+    std::string permission_mode;
 };
 
 enum class ApprovalDecision { ApproveOnce, Deny };
