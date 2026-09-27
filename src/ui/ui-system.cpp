@@ -1,3 +1,9 @@
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #include "ui-system.h"
 #include "card.h"
 #include "application-icon.h"
@@ -26,12 +32,7 @@ extern "C" int zenith_begin_wayland_window_drag(GLFWwindow* window);
 extern "C" int zenith_begin_win32_window_drag(GLFWwindow* window);
 #endif
 
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#elif defined(__APPLE__)
+#ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
 
@@ -103,8 +104,9 @@ unsigned int create_menu_icon_texture() {
     glBindTexture(GL_TEXTURE_2D, texture);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    constexpr GLint clamp_to_edge = 0x812F;
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, clamp_to_edge);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, clamp_to_edge);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, application_icon::width,
                  application_icon::height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
                  application_icon::pixels);

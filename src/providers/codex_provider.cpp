@@ -4,14 +4,26 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
+#include <cwctype>
+#include <cwchar>
 #include <filesystem>
 #include <mutex>
 #include <string>
 #include <csignal>
 #include <system_error>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 #include <utility>
 
 using Json = nlohmann::json;
@@ -26,6 +38,36 @@ std::filesystem::path resolve_executable(const std::filesystem::path& executable
     if (executable.empty())
         return {};
 
+#ifdef _WIN32
+    auto executable_path = [](const std::filesystem::path& path) {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error) || error)
+            return std::filesystem::path{};
+        const std::filesystem::path resolved = std::filesystem::canonical(path, error);
+        return error ? path : resolved;
+    };
+
+    if (executable.has_parent_path())
+        return executable_path(executable);
+
+    const std::filesystem::path extension = executable.extension();
+    const wchar_t* extensions[] = {nullptr, L".exe", L".cmd", L".bat"};
+    const std::size_t extension_count = extension.empty() ? 4 : 1;
+    for (std::size_t index = 0; index < extension_count; ++index) {
+        std::wstring resolved(32768, L'\0');
+        const DWORD length = SearchPathW(nullptr, executable.c_str(), extensions[index],
+                                         static_cast<DWORD>(resolved.size()), resolved.data(),
+                                         nullptr);
+        if (length == 0 || length >= resolved.size())
+            continue;
+        resolved.resize(length);
+        const std::filesystem::path path(resolved);
+        const std::filesystem::path canonical = executable_path(path);
+        if (!canonical.empty())
+            return canonical;
+    }
+    return {};
+#else
     auto executable_path = [](const std::filesystem::path& path) {
         std::error_code error;
         if (!std::filesystem::is_regular_file(path, error) || error ||
@@ -59,6 +101,7 @@ std::filesystem::path resolve_executable(const std::filesystem::path& executable
         start = end + 1;
     }
     return {};
+#endif
 }
 
 std::string json_text(const Json& value) {
@@ -86,7 +129,12 @@ struct CodexState {
 };
 
 struct CodexProcess {
+#ifdef _WIN32
+    HANDLE process = nullptr;
+    DWORD pid = 0;
+#else
     pid_t pid = -1;
+#endif
     FILE* input = nullptr;
     FILE* output = nullptr;
 };
@@ -163,6 +211,153 @@ Event make_tool_activity_event(StreamContext* context, const Json& item, bool co
 }
 
 Result start_codex_process(const CodexOptions* options, CodexProcess* process) {
+#ifdef _WIN32
+    SECURITY_ATTRIBUTES security_attributes{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HANDLE child_input = nullptr;
+    HANDLE parent_input = nullptr;
+    HANDLE parent_output = nullptr;
+    HANDLE child_output = nullptr;
+    HANDLE child_error = nullptr;
+    if (!CreatePipe(&child_input, &parent_input, &security_attributes, 0) ||
+        !CreatePipe(&parent_output, &child_output, &security_attributes, 0)) {
+        if (child_input != nullptr)
+            CloseHandle(child_input);
+        if (parent_input != nullptr)
+            CloseHandle(parent_input);
+        if (parent_output != nullptr)
+            CloseHandle(parent_output);
+        if (child_output != nullptr)
+            CloseHandle(child_output);
+        return result_error("Failed to create Codex app-server pipes");
+    }
+    if (!SetHandleInformation(parent_input, HANDLE_FLAG_INHERIT, 0) ||
+        !SetHandleInformation(parent_output, HANDLE_FLAG_INHERIT, 0)) {
+        CloseHandle(child_input);
+        CloseHandle(parent_input);
+        CloseHandle(parent_output);
+        CloseHandle(child_output);
+        return result_error("Failed to prepare Codex app-server pipes");
+    }
+
+    child_error = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              &security_attributes, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                              nullptr);
+    if (child_error == INVALID_HANDLE_VALUE) {
+        CloseHandle(child_input);
+        CloseHandle(parent_input);
+        CloseHandle(parent_output);
+        CloseHandle(child_output);
+        return result_error("Failed to prepare Codex app-server output");
+    }
+
+    const std::filesystem::path executable = options->executable;
+    std::wstring extension = executable.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](wchar_t character) { return static_cast<wchar_t>(std::towlower(character)); });
+    const bool is_script = extension == L".cmd" || extension == L".bat";
+    std::wstring application;
+    std::wstring command_line;
+    if (is_script) {
+        application = L"cmd.exe";
+        command_line = L"cmd.exe /D /S /C \"\"" + executable.wstring() +
+                       L"\" app-server\"";
+    } else {
+        application = executable.wstring();
+        command_line = L"\"" + application + L"\" app-server";
+    }
+    std::vector<wchar_t> writable_command_line(command_line.begin(), command_line.end());
+    writable_command_line.push_back(L'\0');
+
+    std::vector<wchar_t> environment;
+    DWORD creation_flags = CREATE_NO_WINDOW;
+    if (!options->codex_home.empty()) {
+        LPWCH inherited_environment = GetEnvironmentStringsW();
+        std::vector<std::wstring> entries;
+        if (inherited_environment != nullptr) {
+            for (const wchar_t* entry = inherited_environment; *entry != L'\0';
+                 entry += std::wcslen(entry) + 1) {
+                entries.emplace_back(entry);
+            }
+            FreeEnvironmentStringsW(inherited_environment);
+        }
+
+        const std::wstring codex_home = options->codex_home.wstring();
+        const std::wstring codex_home_entry = L"CODEX_HOME=" + codex_home;
+        bool replaced = false;
+        for (std::wstring& entry : entries) {
+            const std::size_t name_start = !entry.empty() && entry[0] == L'=' ? 1 : 0;
+            const std::size_t name_end = entry.find(L'=', name_start);
+            if (name_end != std::wstring::npos &&
+                _wcsicmp(entry.substr(0, name_end).c_str(), L"CODEX_HOME") == 0) {
+                entry = codex_home_entry;
+                replaced = true;
+                break;
+            }
+        }
+        if (!replaced)
+            entries.push_back(codex_home_entry);
+        std::sort(entries.begin(), entries.end(), [](const std::wstring& left,
+                                                     const std::wstring& right) {
+            return _wcsicmp(left.c_str(), right.c_str()) < 0;
+        });
+        for (const std::wstring& entry : entries) {
+            environment.insert(environment.end(), entry.begin(), entry.end());
+            environment.push_back(L'\0');
+        }
+        environment.push_back(L'\0');
+        creation_flags |= CREATE_UNICODE_ENVIRONMENT;
+    }
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = child_input;
+    startup.hStdOutput = child_output;
+    startup.hStdError = child_error;
+    PROCESS_INFORMATION child{};
+    const BOOL started = CreateProcessW(
+        application.c_str(), writable_command_line.data(), nullptr, nullptr, TRUE,
+        creation_flags, environment.empty() ? nullptr : environment.data(), nullptr,
+        &startup, &child);
+    CloseHandle(child_input);
+    CloseHandle(child_output);
+    CloseHandle(child_error);
+    if (!started) {
+        CloseHandle(parent_input);
+        CloseHandle(parent_output);
+        return result_error("Failed to start Codex app-server");
+    }
+
+    CloseHandle(child.hThread);
+    process->process = child.hProcess;
+    process->pid = child.dwProcessId;
+    const int input_fd = _open_osfhandle(
+        reinterpret_cast<intptr_t>(parent_input), _O_WRONLY | _O_TEXT);
+    if (input_fd < 0) {
+        CloseHandle(parent_input);
+        CloseHandle(parent_output);
+        return result_error("Failed to connect to Codex app-server");
+    }
+    process->input = _fdopen(input_fd, "w");
+    if (process->input == nullptr) {
+        _close(input_fd);
+        CloseHandle(parent_output);
+        return result_error("Failed to connect to Codex app-server");
+    }
+    const int output_fd = _open_osfhandle(
+        reinterpret_cast<intptr_t>(parent_output), _O_RDONLY | _O_TEXT);
+    if (output_fd < 0) {
+        CloseHandle(parent_output);
+        return result_error("Failed to connect to Codex app-server");
+    }
+    process->output = _fdopen(output_fd, "r");
+    if (process->output == nullptr) {
+        _close(output_fd);
+        return result_error("Failed to connect to Codex app-server");
+    }
+    setvbuf(process->input, nullptr, _IOLBF, 0);
+    return result_ok();
+#else
     int input_pipe[2];
     int output_pipe[2];
     if (pipe(input_pipe) != 0)
@@ -206,11 +401,29 @@ Result start_codex_process(const CodexOptions* options, CodexProcess* process) {
         return result_error("Failed to connect to Codex app-server");
     setvbuf(process->input, nullptr, _IOLBF, 0);
     return result_ok();
+#endif
+}
+
+bool codex_process_running(const CodexProcess* process) {
+#ifdef _WIN32
+    return process->process != nullptr;
+#else
+    return process->pid > 0;
+#endif
+}
+
+void terminate_codex_process(CodexProcess* process) {
+#ifdef _WIN32
+    if (process->process != nullptr)
+        TerminateProcess(process->process, 1);
+#else
+    if (process->pid > 0)
+        kill(process->pid, SIGTERM);
+#endif
 }
 
 void stop_codex_process(CodexProcess* process) {
-    if (process->pid > 0)
-        kill(process->pid, SIGTERM);
+    terminate_codex_process(process);
     if (process->input != nullptr) {
         fclose(process->input);
         process->input = nullptr;
@@ -219,17 +432,24 @@ void stop_codex_process(CodexProcess* process) {
         fclose(process->output);
         process->output = nullptr;
     }
+#ifdef _WIN32
+    if (process->process != nullptr) {
+        WaitForSingleObject(process->process, INFINITE);
+        CloseHandle(process->process);
+        process->process = nullptr;
+        process->pid = 0;
+    }
+#else
     if (process->pid > 0) {
         int status = 0;
         while (waitpid(process->pid, &status, 0) < 0 && errno == EINTR) {
         }
         process->pid = -1;
     }
+#endif
 }
 
 void force_stop_codex_process(CodexProcess* process) {
-    if (process->pid > 0)
-        kill(process->pid, SIGTERM);
     stop_codex_process(process);
 }
 
@@ -240,22 +460,29 @@ bool write_message(FILE* input, const Json& message) {
 }
 
 bool read_message(FILE* output, Json* message) {
-    char* line = nullptr;
-    std::size_t capacity = 0;
-    const ssize_t length = getline(&line, &capacity, output);
-    if (length < 0) {
-        free(line);
+    std::string line;
+    int character = 0;
+    while ((character = fgetc(output)) != EOF && character != '\n')
+        line.push_back(static_cast<char>(character));
+    if (character == EOF && line.empty())
         return false;
-    }
 
     try {
-        *message = Json::parse(line, line + length);
+        *message = Json::parse(line);
     } catch (...) {
-        free(line);
         return false;
     }
-    free(line);
     return true;
+}
+
+void ignore_sigpipe() {
+#ifndef _WIN32
+    static const bool ignored = [] {
+        std::signal(SIGPIPE, SIG_IGN);
+        return true;
+    }();
+    (void)ignored;
+#endif
 }
 
 void emit_stream_event(StreamContext* context, EventKind kind, std::string text) {
@@ -349,11 +576,7 @@ std::string conversation_prompt(const TurnRequest* request) {
 std::vector<ModelOption> fetch_codex_models(const CodexOptions* options,
                                             ProviderRuntime* runtime,
                                             ProviderAvailability* availability) {
-    static const bool ignore_sigpipe = [] {
-        std::signal(SIGPIPE, SIG_IGN);
-        return true;
-    }();
-    (void)ignore_sigpipe;
+    ignore_sigpipe();
 
     std::vector<ModelOption> models;
     *availability = ProviderAvailability::Unavailable;
@@ -434,11 +657,7 @@ std::vector<ModelOption> fetch_codex_models(const CodexOptions* options,
 Result run_codex(CodexState* state, const TurnRequest* request,
                  ProviderRuntime* runtime) {
     const CodexOptions* options = &state->options;
-    static const bool ignore_sigpipe = [] {
-        std::signal(SIGPIPE, SIG_IGN);
-        return true;
-    }();
-    (void)ignore_sigpipe;
+    ignore_sigpipe();
 
     CodexProcess process;
     Result result = start_codex_process(options, &process);
@@ -451,7 +670,7 @@ Result run_codex(CodexState* state, const TurnRequest* request,
         std::lock_guard lock(state->active_mutex);
         state->active_process = &process;
         if (state->cancel_requested)
-            kill(process.pid, SIGTERM);
+            terminate_codex_process(&process);
     }
 
     StreamContext stream{runtime, request, false, false, {}};
@@ -605,8 +824,8 @@ void cancel_codex(Provider* provider, TurnId turn_id) {
     if (turn_id == 0 || state->active_turn_id != turn_id)
         return;
     state->cancel_requested = true;
-    if (state->active_process != nullptr && state->active_process->pid > 0)
-        kill(state->active_process->pid, SIGTERM);
+    if (state->active_process != nullptr && codex_process_running(state->active_process))
+        terminate_codex_process(state->active_process);
 }
 
 std::vector<Event> poll_codex(Provider* provider) {
