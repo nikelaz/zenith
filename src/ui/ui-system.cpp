@@ -391,6 +391,9 @@ void UISystem::render_frame_to_backbuffer() {
     }
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Open Project..."))
+                open_project_dialog(m_state);
+            ImGui::Separator();
             if (ImGui::MenuItem("Settings"))
                 m_open_settings_requested = true;
             if (ImGui::MenuItem("Close"))

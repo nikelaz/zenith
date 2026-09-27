@@ -12,6 +12,19 @@
 #include <utility>
 
 namespace {
+constexpr float chat_component_spacing = 13.0f;
+constexpr float chat_line_height_ratio = 1.5f;
+bool has_chat_component = false;
+
+void begin_chat_component() {
+    if (has_chat_component) {
+        ImVec2 position = ImGui::GetCursorScreenPos();
+        position.y += chat_component_spacing;
+        ImGui::SetCursorScreenPos(position);
+    }
+    has_chat_component = true;
+}
+
 struct TextSpan {
     std::string text;
     ImVec2 position;
@@ -223,6 +236,29 @@ public:
     }
 
 protected:
+    void BLOCK_UL(const MD_BLOCK_UL_DETAIL* detail, bool entering) override {
+        imgui_md::BLOCK_UL(detail, entering);
+        list_depth += entering ? 1 : -1;
+    }
+
+    void BLOCK_OL(const MD_BLOCK_OL_DETAIL* detail, bool entering) override {
+        imgui_md::BLOCK_OL(detail, entering);
+        list_depth += entering ? 1 : -1;
+    }
+
+    void BLOCK_P(bool entering) override {
+        if (list_depth > 0)
+            return;
+        if (entering) {
+            begin_chat_component();
+        } else {
+            ImGui::NewLine();
+            ImVec2 position = ImGui::GetCursorScreenPos();
+            position.y -= ImGui::GetStyle().ItemSpacing.y;
+            ImGui::SetCursorScreenPos(position);
+        }
+    }
+
     void BLOCK_CODE(const MD_BLOCK_CODE_DETAIL* detail, bool entering) override {
         imgui_md::BLOCK_CODE(detail, entering);
         if (entering) {
@@ -232,6 +268,7 @@ protected:
         } else {
             if (!code.empty() && code.back() == '\n')
                 code.pop_back();
+            begin_chat_component();
             render_code_card(code, language, monospace_font);
         }
     }
@@ -247,7 +284,15 @@ protected:
 private:
     std::string code;
     std::string language;
+    int list_depth = 0;
 };
+
+void render_markdown_text(ChatMarkdown& markdown, const std::string& text) {
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                        ImVec2(0.0f, ImGui::GetFontSize() * (chat_line_height_ratio - 1.0f)));
+    markdown.print(text.c_str(), text.c_str() + text.size());
+    ImGui::PopStyleVar();
+}
 
 enum class ActivityIcon {
     Terminal,
@@ -354,9 +399,40 @@ std::string elide_tool_title(const std::string& title, float max_width, ImFont* 
     return "...";
 }
 
+std::size_t wrapped_line_count(const std::string& text, float width,
+                               ImFont* font, float font_size) {
+    if (text.empty())
+        return 1;
+    const char* cursor = text.c_str();
+    const char* end = cursor + text.size();
+    std::size_t lines = 0;
+    while (cursor < end) {
+        const char* hard_end = std::find(cursor, end, '\n');
+        const char* wrap_end = font->CalcWordWrapPosition(font_size, cursor, hard_end, width);
+        if (wrap_end == cursor)
+            wrap_end = cursor + 1;
+        cursor = wrap_end;
+        if (cursor < hard_end) {
+            while (cursor < hard_end && *cursor == ' ')
+                ++cursor;
+        } else if (cursor == hard_end && cursor < end) {
+            ++cursor;
+        }
+        ++lines;
+    }
+    return lines;
+}
+
+float wrapped_text_height(const std::string& text, float width,
+                          ImFont* font, float font_size) {
+    return font_size + (wrapped_line_count(text, width, font, font_size) - 1) *
+        font_size * chat_line_height_ratio;
+}
+
 void render_wrapped_selectable_text(const std::string& text, float width) {
     ImFont* font = ImGui::GetFont();
     const float font_size = ImGui::GetFontSize();
+    const float line_height = font_size * chat_line_height_ratio;
     const ImVec2 start = ImGui::GetCursorScreenPos();
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     const ImU32 color = ImGui::GetColorU32(ImGuiCol_Text);
@@ -368,7 +444,7 @@ void render_wrapped_selectable_text(const std::string& text, float width) {
         const char* wrap_end = font->CalcWordWrapPosition(font_size, cursor, hard_end, width);
         if (wrap_end == cursor)
             wrap_end = cursor + 1;
-        const ImVec2 position(start.x, start.y + line * font_size);
+        const ImVec2 position(start.x, start.y + line * line_height);
         draw_list->AddText(font, font_size, position, color, cursor, wrap_end);
         register_text(cursor, wrap_end, position, font, font_size);
         cursor = wrap_end;
@@ -380,7 +456,8 @@ void render_wrapped_selectable_text(const std::string& text, float width) {
         }
         ++line;
     }
-    ImGui::Dummy(ImVec2(width, std::max(1.0f, line * font_size)));
+    ImGui::Dummy(ImVec2(width, font_size +
+                        (line > 0 ? line - 1 : 0) * line_height));
 }
 
 void render_code_card(const std::string& code, const std::string& language,
@@ -581,9 +658,8 @@ void render_expandable_card(const char* expanded_id_name, const std::string& tit
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     const float body_width = std::max(
         1.0f, card_width - details_horizontal_padding * 2.0f);
-    const ImVec2 details_size = measure_text(details_font, font_size, details, body_width,
-                                             body_width);
-    const float body_content_height = std::max(ImGui::GetTextLineHeight(), details_size.y);
+    const float body_content_height = wrapped_text_height(details, body_width,
+                                                           details_font, font_size);
     const float body_height = std::min(max_body_height,
                                        body_content_height + details_vertical_padding * 2.0f);
     const float card_height = row_height + (expanded ? body_height : 0.0f);
@@ -657,6 +733,7 @@ void render_expandable_card(const char* expanded_id_name, const std::string& tit
 }
 
 void render_tool_activity(const ToolActivity& tool, ImFont* monospace_font) {
+    begin_chat_component();
     const bool is_terminal = tool.is_terminal || !tool.command.empty();
     const std::string title = is_terminal
         ? (tool.command.empty() ? "Terminal" : tool.command)
@@ -686,12 +763,14 @@ void render_tool_activity(const ToolActivity& tool, ImFont* monospace_font) {
 }
 
 void render_reasoning(const std::string& reasoning) {
+    begin_chat_component();
     ImFont* sans_font = ImGui::GetFont();
     render_expandable_card("##reasoning-expanded", "Reasoning", ActivityIcon::Reasoning,
                            reasoning, sans_font, sans_font, {}, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
 }
 
 void render_user_message(const ChatMessage& message) {
+    begin_chat_component();
     constexpr float horizontal_padding = 12.0f;
     constexpr float vertical_padding = 8.0f;
     constexpr float max_width_ratio = 0.8f;
@@ -701,7 +780,8 @@ void render_user_message(const ChatMessage& message) {
     const ImVec2 measured = ImGui::CalcTextSize(message.content.c_str(), nullptr, false,
                                                 max_text_width);
     const float text_width = std::min(max_text_width, std::max(1.0f, measured.x));
-    const float text_height = std::max(ImGui::GetTextLineHeight(), measured.y);
+    const float text_height = wrapped_text_height(message.content, max_text_width,
+                                                   ImGui::GetFont(), ImGui::GetFontSize());
     const ImVec2 row_pos = ImGui::GetCursorScreenPos();
     const float bubble_width = text_width + horizontal_padding * 2.0f;
     const float bubble_height = text_height + vertical_padding * 2.0f;
@@ -755,19 +835,26 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
         constexpr float input_height = 58.0f;
         constexpr float footer_height = 38.0f;
         constexpr float composer_height = outer_padding + input_height + footer_height;
+        constexpr float max_chat_width = 960.0f;
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        const float available_width = ImGui::GetContentRegionAvail().x;
+        const float chat_width = std::min(available_width, max_chat_width);
+        const float chat_offset = (available_width - chat_width) * 0.5f;
+        const float chat_x = ImGui::GetCursorPosX() + chat_offset;
         const float available_height = ImGui::GetContentRegionAvail().y;
         const float message_height = std::max(
             0.0f, available_height - composer_height - ImGui::GetStyle().ItemSpacing.y);
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-        ImGui::BeginChild("##messages", ImVec2(0.0f, message_height), false);
+        ImGui::SetCursorPosX(chat_x);
+        ImGui::BeginChild("##messages", ImVec2(chat_width, message_height), false);
         const ImVec2 messages_min = ImGui::GetWindowPos();
         const ImVec2 messages_size = ImGui::GetWindowSize();
         const ImVec2 messages_max(messages_min.x + messages_size.x,
                                   messages_min.y + messages_size.y);
         transcript_selection.spans.clear();
+        has_chat_component = false;
         const bool was_at_bottom = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f;
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 6.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
         for (std::size_t message_index = 0; message_index < thread.messages.size(); ++message_index) {
             const ChatMessage& message = thread.messages[message_index];
             ImGui::PushID(static_cast<int>(message_index));
@@ -789,7 +876,7 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
                             render_tool_activity(segment.tool, monospace_font);
                             ImGui::PopID();
                         } else if (!segment.text.empty()) {
-                            markdown.print(segment.text.c_str(), segment.text.c_str() + segment.text.size());
+                            render_markdown_text(markdown, segment.text);
                         }
                     }
                 } else {
@@ -798,13 +885,11 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
                         tool.command = activity;
                         render_tool_activity(tool, monospace_font);
                     }
-                    markdown.print(message.content.c_str(),
-                                   message.content.c_str() + message.content.size());
+                    render_markdown_text(markdown, message.content);
                 }
             }
             ImGui::EndGroup();
             ImGui::PopID();
-            ImGui::Dummy(ImVec2(1.0f, 9.0f));
         }
         ImGui::PopStyleVar();
         ImGuiIO& io = ImGui::GetIO();
@@ -845,8 +930,9 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
         ImGui::EndChild();
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
+        ImGui::SetCursorPosX(chat_x);
         const ImVec2 input_pos = ImGui::GetCursorScreenPos();
-        const float full_width = ImGui::GetContentRegionAvail().x;
+        const float full_width = chat_width;
         constexpr float total_height = composer_height;
         const float send_size = 32.0f;
         const ImVec2 frame_max(input_pos.x + full_width, input_pos.y + total_height);

@@ -47,12 +47,40 @@ std::filesystem::path normalized_directory(const std::filesystem::path& director
     return normalized;
 }
 
-void add_project(ApplicationState& state) {
+void render_folder_icon(ImDrawList* draw_list, ImVec2 position, float size) {
+    static constexpr unsigned char alpha[12][12] = {
+        {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+        {0xa7, 0xf1, 0xf0, 0xf0, 0xf2, 0xc9, 0x3b, 0x0e, 0x0f, 0x0f, 0x0d, 0x00},
+        {0xee, 0x66, 0x36, 0x38, 0x3d, 0x9b, 0xd8, 0xc4, 0xc4, 0xc4, 0xc0, 0x75},
+        {0xed, 0x31, 0x00, 0x00, 0x00, 0x08, 0x41, 0x59, 0x58, 0x56, 0x81, 0xee},
+        {0xed, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0xed},
+        {0xed, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0xed},
+        {0xed, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0xed},
+        {0xed, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x34, 0xed},
+        {0xed, 0x31, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x31, 0xed},
+        {0xee, 0x66, 0x36, 0x39, 0x39, 0x39, 0x39, 0x39, 0x39, 0x36, 0x66, 0xee},
+        {0xa7, 0xf1, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf0, 0xf1, 0xa7},
+        {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    };
+    const float pixel_size = size / 12.0f;
+    for (int y = 0; y < 12; ++y) {
+        for (int x = 0; x < 12; ++x) {
+            if (alpha[y][x] == 0)
+                continue;
+            const ImVec2 min(position.x + x * pixel_size, position.y + y * pixel_size);
+            const ImVec2 max(min.x + pixel_size, min.y + pixel_size);
+            draw_list->AddRectFilled(min, max,
+                ImGui::GetColorU32(ImGuiCol_Text, alpha[y][x] / 255.0f));
+        }
+    }
+}
+
+void open_project(ApplicationState& state) {
     std::string default_path_storage;
     if (state.selected_project < state.projects.size())
         default_path_storage = state.projects[state.selected_project].directory.string();
 
-    char* selected_directory = tinyfd_selectFolderDialog("New Project",
+    char* selected_directory = tinyfd_selectFolderDialog("Open Project",
         default_path_storage.empty() ? nullptr : default_path_storage.c_str());
     if (selected_directory == nullptr)
         return;
@@ -182,6 +210,10 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
 }
 }
 
+void open_project_dialog(ApplicationState& state) {
+    open_project(state);
+}
+
 void render_threads_panel(ApplicationState& state) {
     static std::optional<PendingThreadDelete> pending_delete;
     static std::optional<PendingProjectDelete> pending_project_delete;
@@ -193,16 +225,30 @@ void render_threads_panel(ApplicationState& state) {
     const ImGuiStyle& style = ImGui::GetStyle();
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Projects");
-    const float new_project_width = ImGui::CalcTextSize("+ New Project").x +
-                                    style.FramePadding.x * 2.0f;
+    constexpr float folder_icon_size = 11.7f;
+    const float label_width = ImGui::CalcTextSize("Open Project").x;
+    const float new_project_width = style.FramePadding.x * 2.0f + folder_icon_size +
+                                    style.ItemInnerSpacing.x + label_width;
     const float new_project_x = ImGui::GetWindowWidth() - style.WindowPadding.x -
                                 new_project_width;
     ImGui::SameLine(new_project_x);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-    const bool new_project = ImGui::Button("+ New Project", ImVec2(new_project_width, 0.0f));
+    const bool open_project_clicked = ImGui::Button("##open-project",
+        ImVec2(new_project_width, 0.0f));
+    const ImVec2 button_min = ImGui::GetItemRectMin();
+    const ImVec2 button_max = ImGui::GetItemRectMax();
+    const float button_height = button_max.y - button_min.y;
+    const float folder_y = button_min.y + (button_height - folder_icon_size) * 0.5f;
+    const float folder_x = button_min.x + style.FramePadding.x;
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    render_folder_icon(draw_list, ImVec2(folder_x, folder_y), folder_icon_size);
+    const float label_x = folder_x + folder_icon_size + style.ItemInnerSpacing.x;
+    const float label_y = button_min.y + (button_height - ImGui::GetTextLineHeight()) * 0.5f;
+    draw_list->AddText(ImVec2(label_x, label_y), ImGui::GetColorU32(ImGuiCol_Text),
+                       "Open Project");
     ImGui::PopStyleVar();
-    if (new_project)
-        add_project(state);
+    if (open_project_clicked)
+        open_project(state);
     ImGui::Spacing();
 
     for (std::size_t project_index = 0; project_index < state.projects.size(); ++project_index) {
