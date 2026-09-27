@@ -20,6 +20,9 @@ add_subdirectory(third_party/glfw EXCLUDE_FROM_ALL)
 if(GLFW_BUILD_WAYLAND)
     target_sources(glfw PRIVATE src/platform/glfw-wayland-window-drag.c)
 endif()
+if(GLFW_BUILD_WIN32)
+    target_sources(glfw PRIVATE src/platform/glfw-win32-window-drag.c)
+endif()
 
 find_package(OpenGL REQUIRED)
 
@@ -95,6 +98,9 @@ target_include_directories(Zenith PRIVATE third_party/tinyfiledialogs third_part
 target_link_libraries(Zenith PRIVATE imgui_md SQLite3)
 if(GLFW_BUILD_WAYLAND)
     target_compile_definitions(Zenith PRIVATE ZENITH_HAS_WAYLAND_WINDOW_DRAG)
+endif()
+if(GLFW_BUILD_WIN32)
+    target_compile_definitions(Zenith PRIVATE ZENITH_HAS_WIN32_WINDOW_DRAG)
 endif()
 
 if(APPLE)

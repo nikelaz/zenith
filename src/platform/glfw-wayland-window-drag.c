@@ -20,6 +20,7 @@ GLFWAPI int zenith_begin_wayland_window_drag(GLFWwindow* handle)
     {
         xdg_toplevel_move(toplevel, _glfw.wl.seat, _glfw.wl.serial);
         wl_display_flush(_glfw.wl.display);
+        _glfwInputMouseClick(window, GLFW_MOUSE_BUTTON_LEFT, GLFW_RELEASE, 0);
         return GLFW_TRUE;
     }
 

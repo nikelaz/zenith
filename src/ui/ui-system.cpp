@@ -22,6 +22,9 @@
 #ifdef ZENITH_HAS_WAYLAND_WINDOW_DRAG
 extern "C" int zenith_begin_wayland_window_drag(GLFWwindow* window);
 #endif
+#ifdef ZENITH_HAS_WIN32_WINDOW_DRAG
+extern "C" int zenith_begin_win32_window_drag(GLFWwindow* window);
+#endif
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -529,10 +532,10 @@ void UISystem::render_frame_to_backbuffer() {
 
         const ImVec2 mouse_pos = ImGui::GetMousePos();
         const ImVec2 menu_window_max(menu_window_pos.x + menu_window_size.x,
-                                     menu_row_pos.y + menu_row_height);
+                                     menu_window_pos.y + menu_window_size.y);
         const bool mouse_in_title_bar =
             mouse_pos.x >= menu_window_pos.x && mouse_pos.x < menu_window_max.x &&
-            mouse_pos.y >= menu_row_pos.y && mouse_pos.y < menu_window_max.y;
+            mouse_pos.y >= menu_window_pos.y && mouse_pos.y < menu_window_max.y;
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             m_dragging_title_bar = mouse_in_title_bar &&
                                    !ImGui::IsAnyItemHovered() &&
@@ -541,6 +544,12 @@ void UISystem::render_frame_to_backbuffer() {
             if (m_dragging_title_bar && glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
                 zenith_begin_wayland_window_drag(m_window);
                 m_dragging_title_bar = false;
+            }
+#endif
+#ifdef ZENITH_HAS_WIN32_WINDOW_DRAG
+            if (m_dragging_title_bar && glfwGetPlatform() == GLFW_PLATFORM_WIN32) {
+                m_dragging_title_bar =
+                    zenith_begin_win32_window_drag(m_window) != GLFW_TRUE;
             }
 #endif
             if (m_dragging_title_bar) {
