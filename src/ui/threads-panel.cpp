@@ -98,17 +98,31 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
     ImGui::PushID(thread.id.c_str());
     const ImGuiStyle& style = ImGui::GetStyle();
     const float width = ImGui::GetContentRegionAvail().x;
-    const float description_width = width - style.FramePadding.x * 2.0f;
-    const float description_height = ImGui::CalcTextSize(thread.description.c_str(),
-                                                         nullptr, false, description_width)
-                                         .y;
-    const float card_height = style.FramePadding.y * 2.0f + ImGui::GetTextLineHeight() +
-                              style.ItemSpacing.y + description_height;
+    constexpr float horizontal_padding = 12.0f;
+    constexpr float vertical_padding = 9.0f;
+    const float description_width = std::max(1.0f, width - horizontal_padding * 2.0f);
+    const float description_height = thread.description.empty()
+        ? 0.0f
+        : ImGui::CalcTextSize(thread.description.c_str(), nullptr, false,
+                              description_width).y;
+    const float description_spacing = thread.description.empty() ? 0.0f : style.ItemSpacing.y;
+    const float card_height = vertical_padding * 2.0f + ImGui::GetTextLineHeight() +
+                              description_spacing + description_height;
+    const ImVec2 card_min = ImGui::GetCursorScreenPos();
+    const ImVec2 card_max(card_min.x + width, card_min.y + card_height);
+    const bool selected = state.selected_project == project_index &&
+                          state.selected_thread == thread_index;
+    const ImVec4 card_color = selected ? style.Colors[ImGuiCol_Header]
+                                       : style.Colors[ImGuiCol_FrameBg];
+    ImGui::GetWindowDrawList()->AddRectFilled(card_min, card_max,
+        ImGui::GetColorU32(card_color), 8.0f);
 
-    const bool selected = ImGui::Selectable("##thread",
-        state.selected_project == project_index && state.selected_thread == thread_index,
-        0, ImVec2(0.0f, card_height));
-    if (selected) {
+    ImGui::PushStyleVar(ImGuiStyleVar_SelectableRounding, 8.0f);
+    const bool clicked = ImGui::Selectable("##thread", selected, 0,
+                                             ImVec2(width, card_height));
+    ImGui::PopStyleVar();
+    const bool hovered = ImGui::IsItemHovered();
+    if (clicked) {
         state.selected_project = project_index;
         state.selected_thread = thread_index;
     }
@@ -138,19 +152,26 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
     }
     ImGui::PopStyleVar();
 
-    const ImVec2 card_min = ImGui::GetItemRectMin();
-    const ImVec2 card_max = ImGui::GetItemRectMax();
     const ImVec2 cursor_after_card = ImGui::GetCursorPos();
-    const float text_x = card_min.x + style.FramePadding.x;
-    const float title_y = card_min.y + style.FramePadding.y;
+    const float text_x = card_min.x + horizontal_padding;
+    const float title_y = card_min.y + vertical_padding;
     ImGui::SetCursorScreenPos(ImVec2(text_x, title_y));
     ImGui::TextUnformatted(thread.title.c_str());
-    ImGui::SetCursorScreenPos(
-        ImVec2(text_x, title_y + ImGui::GetTextLineHeight() + style.ItemSpacing.y));
-    ImGui::PushTextWrapPos(card_max.x - style.FramePadding.x);
-    ImGui::TextUnformatted(thread.description.c_str());
-    ImGui::PopTextWrapPos();
+    if (!thread.description.empty()) {
+        ImGui::SetCursorScreenPos(
+            ImVec2(text_x, title_y + ImGui::GetTextLineHeight() + description_spacing));
+        ImGui::PushStyleColor(ImGuiCol_Text, style.Colors[ImGuiCol_TextDisabled]);
+        ImGui::PushTextWrapPos(card_max.x - horizontal_padding);
+        ImGui::TextUnformatted(thread.description.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+    }
     ImGui::SetCursorPos(cursor_after_card);
+
+    if (hovered) {
+        ImGui::GetWindowDrawList()->AddRect(card_min, card_max,
+            ImGui::GetColorU32(ImGuiCol_HeaderHovered), 8.0f);
+    }
 
     ImGui::PopID();
     ImGui::Spacing();
@@ -163,16 +184,17 @@ void render_threads_panel(ApplicationState& state) {
 
     ImGui::Begin("Threads");
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 4.0f));
-    const float button_line_x = ImGui::GetCursorPosX();
-    const float button_width = ImGui::GetContentRegionAvail().x;
-    const float horizontal_bleed = ImGui::GetStyle().ItemSpacing.x * 0.5f;
-    ImGui::SetCursorPosX(button_line_x - horizontal_bleed);
+    const ImGuiStyle& style = ImGui::GetStyle();
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Projects");
+    const float new_project_width = ImGui::CalcTextSize("+ New Project").x +
+                                    style.FramePadding.x * 2.0f;
+    const float new_project_x = ImGui::GetWindowWidth() - style.WindowPadding.x -
+                                new_project_width;
+    ImGui::SameLine(new_project_x);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0.0f, 0.5f));
-    const bool new_project = ImGui::Button("+ New Project",
-        ImVec2(button_width + horizontal_bleed * 2.0f, 0.0f));
-    ImGui::PopStyleVar(2);
-    ImGui::SetCursorPosX(button_line_x);
+    const bool new_project = ImGui::Button("+ New Project", ImVec2(new_project_width, 0.0f));
+    ImGui::PopStyleVar();
     if (new_project)
         add_project(state);
     ImGui::Spacing();
@@ -181,23 +203,70 @@ void render_threads_panel(ApplicationState& state) {
         ChatProject& project = state.projects[project_index];
         const std::string directory = project.directory.string();
         ImGui::PushID(directory.c_str());
-        ImGui::SetNextItemOpen(project.expanded, ImGuiCond_Always);
-        const bool expanded = ImGui::TreeNodeEx("##project", ImGuiTreeNodeFlags_None,
-                                                "%s", project_name(project.directory).c_str());
-        project.expanded = expanded;
+        const float row_height = ImGui::GetFrameHeight();
+        const float action_gap = style.ItemInnerSpacing.x;
+        const float action_width = row_height;
+        const float header_width = std::max(1.0f,
+            ImGui::GetContentRegionAvail().x - action_width - action_gap);
+        const bool header_clicked = ImGui::InvisibleButton("##project-header",
+            ImVec2(header_width, row_height), ImGuiButtonFlags_EnableNav);
+        const bool header_hovered = ImGui::IsItemHovered();
+        const bool header_active = ImGui::IsItemActive();
+        if (header_clicked)
+            project.expanded = !project.expanded;
 
-        ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.0f);
-        const bool new_thread = ImGui::SmallButton("+");
+        const ImVec2 header_min = ImGui::GetItemRectMin();
+        const ImVec2 header_max = ImGui::GetItemRectMax();
+        const ImVec4 header_color = header_active
+            ? style.Colors[ImGuiCol_HeaderActive]
+            : header_hovered
+                ? style.Colors[ImGuiCol_HeaderHovered]
+                : project.expanded
+                    ? style.Colors[ImGuiCol_Header]
+                    : style.Colors[ImGuiCol_FrameBg];
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        draw_list->AddRectFilled(header_min, header_max, ImGui::GetColorU32(header_color), 7.0f);
+
+        const ImVec2 arrow_center(header_min.x + row_height * 0.5f,
+                                  header_min.y + row_height * 0.5f);
+        ImVec2 arrow_points[3];
+        if (project.expanded) {
+            arrow_points[0] = ImVec2(arrow_center.x - 5.0f, arrow_center.y - 2.5f);
+            arrow_points[1] = ImVec2(arrow_center.x + 5.0f, arrow_center.y - 2.5f);
+            arrow_points[2] = ImVec2(arrow_center.x, arrow_center.y + 4.5f);
+        } else {
+            arrow_points[0] = ImVec2(arrow_center.x - 2.5f, arrow_center.y - 5.0f);
+            arrow_points[1] = ImVec2(arrow_center.x - 2.5f, arrow_center.y + 5.0f);
+            arrow_points[2] = ImVec2(arrow_center.x + 4.5f, arrow_center.y);
+        }
+        draw_list->AddTriangleFilled(arrow_points[0], arrow_points[1], arrow_points[2],
+                                     ImGui::GetColorU32(ImGuiCol_Text));
+        const float project_text_x = header_min.x + row_height;
+        const float project_text_y = header_min.y + (row_height - ImGui::GetTextLineHeight()) * 0.5f;
+        draw_list->PushClipRect(ImVec2(project_text_x, header_min.y), header_max, true);
+        draw_list->AddText(ImVec2(project_text_x, project_text_y),
+                           ImGui::GetColorU32(ImGuiCol_Text),
+                           project_name(project.directory).c_str());
+        draw_list->PopClipRect();
+
+        ImGui::SameLine(0.0f, action_gap);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 7.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, style.Colors[ImGuiCol_FrameBg]);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, style.Colors[ImGuiCol_HeaderHovered]);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, style.Colors[ImGuiCol_HeaderActive]);
+        const bool new_thread = ImGui::Button("+", ImVec2(action_width, row_height));
+        ImGui::PopStyleColor(3);
         ImGui::PopStyleVar();
         if (new_thread)
             add_thread(state, project_index);
 
-        if (expanded) {
+        if (project.expanded) {
+            ImGui::Indent(style.IndentSpacing);
+            ImGui::Spacing();
             for (std::size_t thread_index = 0; thread_index < project.threads.size(); ++thread_index)
                 render_thread_card(state, project_index, thread_index, pending_delete,
                                    open_delete_confirmation);
-            ImGui::TreePop();
+            ImGui::Unindent(style.IndentSpacing);
         }
         ImGui::PopID();
         ImGui::Spacing();
