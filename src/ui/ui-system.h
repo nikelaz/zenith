@@ -16,6 +16,8 @@ class UISystem {
 private:
     bool m_initialized = false;
     bool m_open_settings_requested = false;
+    bool m_threads_panel_open = true;
+    bool m_chat_panel_open = true;
     bool m_dragging_title_bar = false;
     GLFWwindow* m_window = nullptr;
     GLFWwindow* m_settings_window = nullptr;

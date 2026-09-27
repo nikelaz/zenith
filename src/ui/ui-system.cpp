@@ -535,6 +535,20 @@ void UISystem::render_frame_to_backbuffer() {
                 glfwSetWindowShouldClose(m_window, GLFW_TRUE);
             ImGui::EndMenu();
         }
+        if (ImGui::BeginMenu("View")) {
+            ImGui::MenuItem("Threads", nullptr, &m_threads_panel_open);
+            ImGui::MenuItem("Chat", nullptr, &m_chat_panel_open);
+            ImGui::Separator();
+            if (ImGui::MenuItem("Hide All Panes")) {
+                m_threads_panel_open = false;
+                m_chat_panel_open = false;
+            }
+            if (ImGui::MenuItem("Show All Panes")) {
+                m_threads_panel_open = true;
+                m_chat_panel_open = true;
+            }
+            ImGui::EndMenu();
+        }
 
         const ImGuiStyle& style = ImGui::GetStyle();
         constexpr float control_width = 36.0f;
@@ -619,8 +633,10 @@ void UISystem::render_frame_to_backbuffer() {
         ImGui::EndMainMenuBar();
     }
     render_dock_area();
-    render_threads_panel(m_state);
-    render_chat_panel(m_state, m_providers, m_chat_panel_state);
+    if (m_threads_panel_open)
+        render_threads_panel(m_state);
+    if (m_chat_panel_open)
+        render_chat_panel(m_state, m_providers, m_chat_panel_state);
 
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImVec2 panel_area_max(viewport->WorkPos.x + viewport->WorkSize.x,
