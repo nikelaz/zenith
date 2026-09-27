@@ -24,6 +24,10 @@ private:
     ImGuiContext* m_main_context = nullptr;
     ImGuiContext* m_settings_context = nullptr;
     double m_settings_last_frame_time = 0.0;
+    int m_applied_base_font_size = 0;
+    float m_applied_ui_scale = 0.0f;
+    bool m_appearance_edit_active = false;
+    bool m_settings_show_appearance = true;
     ApplicationState& m_state;
     std::vector<ProviderPtr>& m_providers;
     ChatPanelState m_chat_panel_state;
@@ -40,6 +44,7 @@ private:
     void close_settings_window();
     void render_settings_window();
     void render_settings_contents();
+    void apply_appearance_settings();
 
 public:
     UISystem(GLFWwindow* window, ApplicationState& state, std::vector<ProviderPtr>& providers);

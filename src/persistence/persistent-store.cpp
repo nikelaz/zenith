@@ -232,6 +232,32 @@ Result PersistentStore::open(const std::string& path) {
 }
 
 Result PersistentStore::load(ApplicationState& state) {
+    Statement appearance_statement;
+    if (!prepare(m_database, "SELECT value FROM settings WHERE name = ?",
+                 appearance_statement)) {
+        return fail("Failed to load appearance settings");
+    }
+    sqlite3_bind_text(appearance_statement.get(), 1, "base_font_size", -1, SQLITE_STATIC);
+    int appearance_result = sqlite3_step(appearance_statement.get());
+    if (appearance_result == SQLITE_ROW) {
+        const int value = sqlite3_column_int(appearance_statement.get(), 0);
+        if (value >= 12 && value <= 24)
+            state.base_font_size = value;
+    } else if (appearance_result != SQLITE_DONE) {
+        return fail("Failed to load base font size");
+    }
+    sqlite3_reset(appearance_statement.get());
+    sqlite3_clear_bindings(appearance_statement.get());
+    sqlite3_bind_text(appearance_statement.get(), 1, "ui_scale_milli", -1, SQLITE_STATIC);
+    appearance_result = sqlite3_step(appearance_statement.get());
+    if (appearance_result == SQLITE_ROW) {
+        const int value = sqlite3_column_int(appearance_statement.get(), 0);
+        if (value >= 750 && value <= 2000)
+            state.ui_scale = static_cast<float>(value) / 1000.0f;
+    } else if (appearance_result != SQLITE_DONE) {
+        return fail("Failed to load UI scale");
+    }
+
     Statement count_statement;
     if (!prepare(m_database, "SELECT COUNT(*) FROM threads", count_statement)) {
         return fail("Failed to inspect saved threads");
@@ -424,6 +450,7 @@ Result PersistentStore::save(const ApplicationState& state) {
     Statement message_statement;
     Statement selected_project_statement;
     Statement selected_thread_statement;
+    Statement appearance_statement;
     if (!prepare(m_database,
                  "INSERT INTO projects(position, directory, expanded) VALUES(?, ?, ?)",
                  project_statement) ||
@@ -440,7 +467,11 @@ Result PersistentStore::save(const ApplicationState& state) {
         !prepare(m_database,
                  "INSERT INTO settings(name, value) VALUES('selected_thread', ?) "
                  "ON CONFLICT(name) DO UPDATE SET value = excluded.value",
-                 selected_thread_statement)) {
+                 selected_thread_statement) ||
+        !prepare(m_database,
+                 "INSERT INTO settings(name, value) VALUES(?, ?) "
+                 "ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+                 appearance_statement)) {
         return rollback(fail("Failed to prepare state save"));
     }
 
@@ -501,6 +532,17 @@ Result PersistentStore::save(const ApplicationState& state) {
     if (sqlite3_step(selected_thread_statement.get()) != SQLITE_DONE) {
         return rollback(fail("Failed to save selected thread"));
     }
+    sqlite3_bind_text(appearance_statement.get(), 1, "base_font_size", -1, SQLITE_STATIC);
+    sqlite3_bind_int(appearance_statement.get(), 2, state.base_font_size);
+    if (sqlite3_step(appearance_statement.get()) != SQLITE_DONE)
+        return rollback(fail("Failed to save base font size"));
+    sqlite3_reset(appearance_statement.get());
+    sqlite3_clear_bindings(appearance_statement.get());
+    sqlite3_bind_text(appearance_statement.get(), 1, "ui_scale_milli", -1, SQLITE_STATIC);
+    sqlite3_bind_int(appearance_statement.get(), 2,
+                     static_cast<int>(state.ui_scale * 1000.0f + 0.5f));
+    if (sqlite3_step(appearance_statement.get()) != SQLITE_DONE)
+        return rollback(fail("Failed to save UI scale"));
     result = execute(
         "INSERT INTO settings(name, value) VALUES('projects_initialized', 1) "
         "ON CONFLICT(name) DO UPDATE SET value = excluded.value",

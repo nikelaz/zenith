@@ -1,6 +1,7 @@
 #include "chat-panel.h"
 #include "../platform/clipboard-image.h"
 #include "imgui.h"
+#include "ui-scale.h"
 #include "imgui_internal.h"
 #include "imgui_md.h"
 #include "misc/cpp/imgui_stdlib.h"
@@ -157,7 +158,7 @@ const char* read_composer_clipboard(ImGuiContext* context) {
 void begin_chat_component() {
     if (has_chat_component) {
         ImVec2 position = ImGui::GetCursorScreenPos();
-        position.y += chat_component_spacing;
+        position.y += ui_size(chat_component_spacing);
         ImGui::SetCursorScreenPos(position);
     }
     has_chat_component = true;
@@ -440,56 +441,56 @@ enum class ActivityIcon {
 };
 
 void render_terminal_icon(ImDrawList* draw_list, ImVec2 position, ImU32 color) {
-    const ImVec2 first(position.x + 0.5f, position.y + 1.5f);
-    const ImVec2 corner(position.x + 4.5f, position.y + 5.0f);
-    const ImVec2 last(position.x + 0.5f, position.y + 8.5f);
-    draw_list->AddLine(first, corner, color, 1.5f);
-    draw_list->AddLine(corner, last, color, 1.5f);
-    draw_list->AddLine(ImVec2(position.x + 5.1f, position.y + 8.4f),
-                       ImVec2(position.x + 12.5f, position.y + 8.4f), color, 1.5f);
+    const ImVec2 first(position.x + ui_size(0.5f), position.y + ui_size(1.5f));
+    const ImVec2 corner(position.x + ui_size(4.5f), position.y + ui_size(5.0f));
+    const ImVec2 last(position.x + ui_size(0.5f), position.y + ui_size(8.5f));
+    draw_list->AddLine(first, corner, color, ui_size(1.5f));
+    draw_list->AddLine(corner, last, color, ui_size(1.5f));
+    draw_list->AddLine(ImVec2(position.x + ui_size(5.1f), position.y + ui_size(8.4f)),
+                       ImVec2(position.x + ui_size(12.5f), position.y + ui_size(8.4f)), color, ui_size(1.5f));
 }
 
 void render_tool_icon(ImDrawList* draw_list, ImVec2 position, ImU32 color) {
-    draw_list->PathLineTo(ImVec2(position.x + 5.0f, position.y + 1.7f));
-    draw_list->PathLineTo(ImVec2(position.x + 6.7f, position.y + 1.0f));
-    draw_list->PathLineTo(ImVec2(position.x + 8.9f, position.y + 1.8f));
-    draw_list->PathLineTo(ImVec2(position.x + 10.3f, position.y + 3.1f));
-    draw_list->PathLineTo(ImVec2(position.x + 10.7f, position.y + 4.9f));
-    draw_list->PathLineTo(ImVec2(position.x + 11.1f, position.y + 5.3f));
-    draw_list->PathLineTo(ImVec2(position.x + 12.2f, position.y + 5.3f));
-    draw_list->PathLineTo(ImVec2(position.x + 12.3f, position.y + 6.4f));
-    draw_list->PathLineTo(ImVec2(position.x + 11.0f, position.y + 7.7f));
-    draw_list->PathLineTo(ImVec2(position.x + 9.8f, position.y + 7.7f));
-    draw_list->PathLineTo(ImVec2(position.x + 9.4f, position.y + 6.2f));
-    draw_list->PathLineTo(ImVec2(position.x + 8.8f, position.y + 6.2f));
-    draw_list->PathLineTo(ImVec2(position.x + 7.6f, position.y + 5.7f));
-    draw_list->PathLineTo(ImVec2(position.x + 6.7f, position.y + 4.7f));
-    draw_list->PathLineTo(ImVec2(position.x + 6.2f, position.y + 3.6f));
-    draw_list->PathLineTo(ImVec2(position.x + 6.2f, position.y + 3.3f));
-    draw_list->PathLineTo(ImVec2(position.x + 5.9f, position.y + 2.7f));
-    draw_list->PathLineTo(ImVec2(position.x + 5.0f, position.y + 2.2f));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(5.0f), position.y + ui_size(1.7f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(6.7f), position.y + ui_size(1.0f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(8.9f), position.y + ui_size(1.8f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(10.3f), position.y + ui_size(3.1f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(10.7f), position.y + ui_size(4.9f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(11.1f), position.y + ui_size(5.3f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(12.2f), position.y + ui_size(5.3f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(12.3f), position.y + ui_size(6.4f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(11.0f), position.y + ui_size(7.7f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(9.8f), position.y + ui_size(7.7f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(9.4f), position.y + ui_size(6.2f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(8.8f), position.y + ui_size(6.2f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(7.6f), position.y + ui_size(5.7f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(6.7f), position.y + ui_size(4.7f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(6.2f), position.y + ui_size(3.6f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(6.2f), position.y + ui_size(3.3f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(5.9f), position.y + ui_size(2.7f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(5.0f), position.y + ui_size(2.2f)));
     draw_list->PathFillConcave(color);
 
-    draw_list->PathLineTo(ImVec2(position.x + 1.0f, position.y + 9.5f));
-    draw_list->PathLineTo(ImVec2(position.x + 5.5f, position.y + 5.0f));
-    draw_list->PathLineTo(ImVec2(position.x + 7.4f, position.y + 6.8f));
-    draw_list->PathLineTo(ImVec2(position.x + 2.9f, position.y + 11.3f));
-    draw_list->PathLineTo(ImVec2(position.x + 1.8f, position.y + 11.7f));
-    draw_list->PathLineTo(ImVec2(position.x + 1.0f, position.y + 11.3f));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(1.0f), position.y + ui_size(9.5f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(5.5f), position.y + ui_size(5.0f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(7.4f), position.y + ui_size(6.8f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(2.9f), position.y + ui_size(11.3f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(1.8f), position.y + ui_size(11.7f)));
+    draw_list->PathLineTo(ImVec2(position.x + ui_size(1.0f), position.y + ui_size(11.3f)));
     draw_list->PathFillConcave(color);
 }
 
 void render_reasoning_icon(ImDrawList* draw_list, ImVec2 position, ImU32 color) {
-    draw_list->AddLine(ImVec2(position.x + 3.5f, position.y + 2.1f),
-                       ImVec2(position.x + 8.5f, position.y + 2.1f), color, 1.4f);
-    draw_list->AddLine(ImVec2(position.x + 3.2f, position.y + 4.1f),
-                       ImVec2(position.x + 5.4f, position.y + 7.2f), color, 1.4f);
-    draw_list->AddRectFilled(ImVec2(position.x, position.y + 0.7f),
-                             ImVec2(position.x + 4.0f, position.y + 4.8f), color, 1.0f);
-    draw_list->AddRectFilled(ImVec2(position.x + 8.0f, position.y + 0.7f),
-                             ImVec2(position.x + 12.0f, position.y + 4.8f), color, 1.0f);
-    draw_list->AddRectFilled(ImVec2(position.x + 4.7f, position.y + 6.2f),
-                             ImVec2(position.x + 8.7f, position.y + 10.3f), color, 1.0f);
+    draw_list->AddLine(ImVec2(position.x + ui_size(3.5f), position.y + ui_size(2.1f)),
+                       ImVec2(position.x + ui_size(8.5f), position.y + ui_size(2.1f)), color, ui_size(1.4f));
+    draw_list->AddLine(ImVec2(position.x + ui_size(3.2f), position.y + ui_size(4.1f)),
+                       ImVec2(position.x + ui_size(5.4f), position.y + ui_size(7.2f)), color, ui_size(1.4f));
+    draw_list->AddRectFilled(ImVec2(position.x, position.y + ui_size(0.7f)),
+                             ImVec2(position.x + ui_size(4.0f), position.y + ui_size(4.8f)), color, ui_size(1.0f));
+    draw_list->AddRectFilled(ImVec2(position.x + ui_size(8.0f), position.y + ui_size(0.7f)),
+                             ImVec2(position.x + ui_size(12.0f), position.y + ui_size(4.8f)), color, ui_size(1.0f));
+    draw_list->AddRectFilled(ImVec2(position.x + ui_size(4.7f), position.y + ui_size(6.2f)),
+                             ImVec2(position.x + ui_size(8.7f), position.y + ui_size(10.3f)), color, ui_size(1.0f));
 }
 
 std::string status_label(const ToolActivity& tool, ImVec4* color) {
@@ -601,25 +602,25 @@ void render_wrapped_selectable_text(const std::string& text, float width) {
 
 void render_code_card(const std::string& code, const std::string& language,
                       ImFont* monospace_font) {
-    constexpr float padding = 14.0f;
-    constexpr float header_padding = 4.0f;
+    const float padding = ui_size(14.0f);
+    const float header_padding = ui_size(4.0f);
     const float font_size = ImGui::GetFontSize();
     const float header_height = font_size + header_padding * 2.0f;
     const float line_height = ImGui::GetTextLineHeight();
     const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
     const std::size_t line_count = 1 + std::count(code.begin(), code.end(), '\n');
-    const float body_height = std::min(400.0f, line_count * line_height + padding * 2.0f);
+    const float body_height = std::min(ui_size(400.0f), line_count * line_height + padding * 2.0f);
     const ImVec2 start = ImGui::GetCursorScreenPos();
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
     draw_list->AddRectFilled(start, ImVec2(start.x + width, start.y + header_height + body_height),
-                             ImGui::GetColorU32(ImVec4(0.105f, 0.105f, 0.105f, 1.0f)), 5.0f);
-    draw_list->AddRectFilled(ImVec2(start.x, start.y + header_height - 1.0f),
+                             ImGui::GetColorU32(ImVec4(0.105f, 0.105f, 0.105f, 1.0f)), ui_size(5.0f));
+    draw_list->AddRectFilled(ImVec2(start.x, start.y + header_height - ui_size(1.0f)),
                              ImVec2(start.x + width, start.y + header_height + body_height),
-                             ImGui::GetColorU32(ImVec4(0.065f, 0.065f, 0.065f, 1.0f)), 5.0f,
+                             ImGui::GetColorU32(ImVec4(0.065f, 0.065f, 0.065f, 1.0f)), ui_size(5.0f),
                              ImDrawFlags_RoundCornersBottom);
     const ImU32 icon_color = ImGui::GetColorU32(ImVec4(0.47f, 0.47f, 0.47f, 1.0f));
-    const ImVec2 icon(start.x + padding, start.y + header_padding + 2.0f);
-    constexpr float icon_scale = 0.020f;
+    const ImVec2 icon(start.x + padding, start.y + header_padding + ui_size(2.0f));
+    const float icon_scale = ui_size(0.020f);
     const auto fill_polygon = [&](std::initializer_list<ImVec2> points) {
         ImVec2 scaled[6];
         int count = 0;
@@ -642,19 +643,19 @@ void render_code_card(const std::string& code, const std::string& language,
                   {598.7f, 342.7f}, {530.8f, 320.0f}});
     fill_polygon({{530.8f, 320.0f}, {598.7f, 342.7f}, {502.7f, 438.7f},
                   {457.4f, 393.4f}});
-    draw_list->AddText(ImVec2(start.x + padding + 23.0f, start.y + header_padding),
+    draw_list->AddText(ImVec2(start.x + padding + ui_size(23.0f), start.y + header_padding),
                        ImGui::GetColorU32(ImVec4(0.82f, 0.82f, 0.82f, 1.0f)), "Code");
     register_text("Code", "Code" + 4,
-                  ImVec2(start.x + padding + 23.0f, start.y + header_padding));
+                  ImVec2(start.x + padding + ui_size(23.0f), start.y + header_padding));
     const std::string language_label = display_language(language);
     if (!language_label.empty()) {
         const float label_width = ImGui::CalcTextSize("Code").x;
-        draw_list->AddText(ImVec2(start.x + padding + 32.0f + label_width,
+        draw_list->AddText(ImVec2(start.x + padding + ui_size(32.0f) + label_width,
                                   start.y + header_padding),
                            ImGui::GetColorU32(ImVec4(0.57f, 0.69f, 0.91f, 1.0f)),
                            language_label.c_str());
         register_text(language_label.c_str(), language_label.c_str() + language_label.size(),
-                      ImVec2(start.x + padding + 32.0f + label_width,
+                      ImVec2(start.x + padding + ui_size(32.0f) + label_width,
                              start.y + header_padding));
     }
 
@@ -665,7 +666,7 @@ void render_code_card(const std::string& code, const std::string& language,
                       ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoBackground);
     ImDrawList* code_draw_list = ImGui::GetWindowDrawList();
     ImFont* font = monospace_font != nullptr ? monospace_font : ImGui::GetFont();
-    ImGui::PushFont(font, font_size);
+    ImGui::PushFont(font, 0.0f);
     const ImU32 ordinary = ImGui::GetColorU32(ImVec4(0.82f, 0.82f, 0.82f, 1.0f));
     const ImU32 keyword = ImGui::GetColorU32(ImVec4(0.66f, 0.56f, 0.91f, 1.0f));
     const ImU32 literal = ImGui::GetColorU32(ImVec4(0.81f, 0.68f, 0.47f, 1.0f));
@@ -749,14 +750,14 @@ void render_expandable_card(const char* expanded_id_name, const std::string& tit
                            ActivityIcon icon, const std::string& details,
                            ImFont* header_font, ImFont* details_font,
                            const std::string& status, const ImVec4& status_color) {
-    constexpr float corner_radius = 5.0f;
-    constexpr float header_horizontal_padding = 14.0f;
-    constexpr float header_vertical_padding = 4.0f;
-    constexpr float icon_size = 13.0f;
-    constexpr float icon_gap = 10.0f;
-    constexpr float details_horizontal_padding = 14.0f;
-    constexpr float details_vertical_padding = 7.0f;
-    constexpr float max_body_height = 280.0f;
+    const float corner_radius = ui_size(5.0f);
+    const float header_horizontal_padding = ui_size(14.0f);
+    const float header_vertical_padding = ui_size(4.0f);
+    const float icon_size = ui_size(13.0f);
+    const float icon_gap = ui_size(10.0f);
+    const float details_horizontal_padding = ui_size(14.0f);
+    const float details_vertical_padding = ui_size(7.0f);
+    const float max_body_height = ui_size(280.0f);
     const float font_size = ImGui::GetFontSize();
     const float row_height = font_size + header_vertical_padding * 2.0f;
     const ImVec2 card_min = ImGui::GetCursorScreenPos();
@@ -770,7 +771,7 @@ void render_expandable_card(const char* expanded_id_name, const std::string& tit
     const float natural_title_width = measure_text(header_font, font_size, title).x;
     const ImVec2 natural_details_size = measure_text(details_font, font_size, details);
     const float title_offset = header_horizontal_padding + icon_size + icon_gap;
-    const float status_gap = has_status ? 9.0f : 0.0f;
+    const float status_gap = has_status ? ui_size(9.0f) : 0.0f;
     const float header_width = title_offset + natural_title_width + status_gap + status_size.x +
                                header_horizontal_padding;
     const float details_width = natural_details_size.x + details_horizontal_padding * 2.0f;
@@ -808,7 +809,7 @@ void render_expandable_card(const char* expanded_id_name, const std::string& tit
                              ImGui::GetColorU32(background), corner_radius);
     if (expanded) {
         draw_list->AddRectFilled(
-            ImVec2(card_min.x, card_min.y + row_height - 1.0f),
+            ImVec2(card_min.x, card_min.y + row_height - ui_size(1.0f)),
             ImVec2(card_min.x + card_width, card_min.y + card_height),
             ImGui::GetColorU32(ImVec4(0.065f, 0.065f, 0.065f, 1.0f)), corner_radius,
             ImDrawFlags_RoundCornersBottom);
@@ -818,7 +819,7 @@ void render_expandable_card(const char* expanded_id_name, const std::string& tit
                                card_min.y + header_vertical_padding +
                                    (font_size - icon_size) * 0.5f);
     if (icon == ActivityIcon::Terminal)
-        render_terminal_icon(draw_list, ImVec2(icon_position.x, icon_position.y + 1.5f),
+        render_terminal_icon(draw_list, ImVec2(icon_position.x, icon_position.y + ui_size(1.5f)),
                              icon_color);
     else if (icon == ActivityIcon::Reasoning)
         render_reasoning_icon(draw_list, icon_position, icon_color);
@@ -826,7 +827,7 @@ void render_expandable_card(const char* expanded_id_name, const std::string& tit
         render_tool_icon(draw_list, icon_position, icon_color);
 
     const ImVec4 text_color(0.82f, 0.82f, 0.82f, 1.0f);
-    ImGui::PushFont(header_font, font_size);
+    ImGui::PushFont(header_font, 0.0f);
     ImGui::SetCursorScreenPos(ImVec2(title_x, text_y));
     ImGui::PushStyleColor(ImGuiCol_Text, text_color);
     ImGui::TextUnformatted(clipped_title.c_str());
@@ -854,7 +855,7 @@ void render_expandable_card(const char* expanded_id_name, const std::string& tit
         if (ImGui::BeginChild("##tool-details", child_size,
                               ImGuiChildFlags_AlwaysUseWindowPadding,
                               ImGuiWindowFlags_NoBackground)) {
-            ImGui::PushFont(details_font, font_size);
+            ImGui::PushFont(details_font, 0.0f);
             render_wrapped_selectable_text(details, body_width);
             ImGui::PopFont();
         }
@@ -946,13 +947,15 @@ std::string renderable_assistant_text(const std::string& text,
     return result;
 }
 
-constexpr float attachment_tag_height = 26.0f;
+float attachment_tag_height() {
+    return ImGui::GetFontSize() + ui_size(10.0f);
+}
 constexpr float attachment_tag_spacing = 6.0f;
 constexpr float attachment_tag_row_spacing = 5.0f;
 
 float attachment_tag_width(const std::string& label, bool removable) {
     const float text_width = measure_text(ImGui::GetFont(), ImGui::GetFontSize(), label).x;
-    return 9.0f + 13.0f + 7.0f + text_width + (removable ? 30.0f : 9.0f);
+    return ui_size(29.0f) + text_width + ui_size(removable ? 30.0f : 9.0f);
 }
 
 std::string attachment_tag_label(const std::string& filename, float max_width,
@@ -966,21 +969,22 @@ bool render_attachment_tag(const char* id, ImVec2 position, float width,
                            const std::string& label, bool removable, bool bordered,
                            bool selectable_text, unsigned int icon_texture) {
     ImGui::SetCursorScreenPos(position);
-    ImGui::InvisibleButton(id, ImVec2(width, attachment_tag_height));
+    ImGui::InvisibleButton(id, ImVec2(width, attachment_tag_height()));
     const bool hovered = ImGui::IsItemHovered();
-    const ImVec2 tag_max(position.x + width, position.y + attachment_tag_height);
+    const ImVec2 tag_max(position.x + width, position.y + attachment_tag_height());
     const ImVec4 background = hovered
         ? ImVec4(0.24f, 0.24f, 0.24f, 1.0f)
         : ImVec4(0.20f, 0.20f, 0.20f, 1.0f);
     ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    draw_list->AddRectFilled(position, tag_max, ImGui::GetColorU32(background), 5.0f);
+    draw_list->AddRectFilled(position, tag_max, ImGui::GetColorU32(background), ui_size(5.0f));
     if (bordered)
         draw_list->AddRect(position, tag_max,
-            ImGui::GetColorU32(ImVec4(0.34f, 0.34f, 0.34f, 1.0f)), 5.0f);
+            ImGui::GetColorU32(ImVec4(0.34f, 0.34f, 0.34f, 1.0f)), ui_size(5.0f));
 
     if (icon_texture != 0) {
-        const ImVec2 icon_min(position.x + 11.0f, position.y + 6.6f);
-        const ImVec2 icon_max(icon_min.x + 8.8f, icon_min.y + 12.8f);
+        const ImVec2 icon_min(position.x + ui_size(11.0f),
+                               position.y + (attachment_tag_height() - ui_size(12.8f)) * 0.5f);
+        const ImVec2 icon_max(icon_min.x + ui_size(8.8f), icon_min.y + ui_size(12.8f));
         draw_list->AddImage(ImTextureRef(static_cast<ImTextureID>(icon_texture)),
             icon_min, icon_max, ImVec2(0, 0), ImVec2(1, 1),
             ImGui::GetColorU32(ImVec4(0.80f, 0.80f, 0.80f, 1.0f)));
@@ -988,8 +992,8 @@ bool render_attachment_tag(const char* id, ImVec2 position, float width,
 
     ImFont* font = ImGui::GetFont();
     const float font_size = ImGui::GetFontSize();
-    const ImVec2 label_pos(position.x + 29.0f,
-                           position.y + (attachment_tag_height - font_size) * 0.5f);
+    const ImVec2 label_pos(position.x + ui_size(29.0f),
+                           position.y + (attachment_tag_height() - font_size) * 0.5f);
     draw_list->AddText(font, font_size, label_pos,
                        ImGui::GetColorU32(ImVec4(0.90f, 0.90f, 0.90f, 1.0f)),
                        label.c_str());
@@ -999,23 +1003,23 @@ bool render_attachment_tag(const char* id, ImVec2 position, float width,
 
     if (!removable)
         return false;
-    const float close_x = tag_max.x - 14.0f;
-    const float close_y = position.y + attachment_tag_height * 0.5f;
-    const bool close_hovered = hovered && ImGui::GetIO().MousePos.x >= tag_max.x - 25.0f;
+    const float close_x = tag_max.x - ui_size(14.0f);
+    const float close_y = position.y + attachment_tag_height() * 0.5f;
+    const bool close_hovered = hovered && ImGui::GetIO().MousePos.x >= tag_max.x - ui_size(25.0f);
     const ImU32 close_color = ImGui::GetColorU32(close_hovered
         ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f)
         : ImVec4(0.75f, 0.75f, 0.75f, 1.0f));
-    draw_list->AddLine(ImVec2(close_x - 4.0f, close_y - 4.0f),
-                       ImVec2(close_x + 4.0f, close_y + 4.0f), close_color, 1.7f);
-    draw_list->AddLine(ImVec2(close_x + 4.0f, close_y - 4.0f),
-                       ImVec2(close_x - 4.0f, close_y + 4.0f), close_color, 1.7f);
+    draw_list->AddLine(ImVec2(close_x - ui_size(4.0f), close_y - ui_size(4.0f)),
+                       ImVec2(close_x + ui_size(4.0f), close_y + ui_size(4.0f)), close_color, ui_size(1.7f));
+    draw_list->AddLine(ImVec2(close_x + ui_size(4.0f), close_y - ui_size(4.0f)),
+                       ImVec2(close_x - ui_size(4.0f), close_y + ui_size(4.0f)), close_color, ui_size(1.7f));
     return close_hovered && ImGui::IsItemClicked();
 }
 
 void render_user_message(const ChatMessage& message, unsigned int icon_texture) {
     begin_chat_component();
-    constexpr float horizontal_padding = 12.0f;
-    constexpr float vertical_padding = 8.0f;
+    const float horizontal_padding = ui_size(12.0f);
+    const float vertical_padding = ui_size(8.0f);
     constexpr float max_width_ratio = 0.8f;
     const float available_width = ImGui::GetContentRegionAvail().x;
     const float max_text_width = std::max(1.0f, available_width * max_width_ratio -
@@ -1040,21 +1044,21 @@ void render_user_message(const ChatMessage& message, unsigned int icon_texture) 
         if (attachment_rows == 0) {
             attachment_rows = 1;
         } else if (row_width > 0.0f &&
-                   row_width + attachment_tag_spacing + width > max_text_width) {
+                   row_width + ui_size(attachment_tag_spacing) + width > max_text_width) {
             ++attachment_rows;
             row_width = 0.0f;
         }
         if (row_width > 0.0f)
-            row_width += attachment_tag_spacing;
+            row_width += ui_size(attachment_tag_spacing);
         row_width += width;
         attachment_width = std::max(attachment_width, row_width);
         attachment_labels.push_back(label);
         attachment_widths.push_back(width);
     }
     const float attachment_height = attachment_rows == 0 ? 0.0f
-        : attachment_rows * attachment_tag_height +
-          (attachment_rows - 1) * attachment_tag_row_spacing;
-    const float content_gap = attachment_height > 0.0f && text_height > 0.0f ? 6.0f : 0.0f;
+        : attachment_rows * attachment_tag_height() +
+          (attachment_rows - 1) * ui_size(attachment_tag_row_spacing);
+    const float content_gap = attachment_height > 0.0f && text_height > 0.0f ? ui_size(6.0f) : 0.0f;
     const ImVec2 row_pos = ImGui::GetCursorScreenPos();
     const float bubble_width = std::max(1.0f, std::max(text_width, attachment_width)) +
                                horizontal_padding * 2.0f;
@@ -1064,7 +1068,7 @@ void render_user_message(const ChatMessage& message, unsigned int icon_texture) 
     const ImVec2 bubble_max(bubble_min.x + bubble_width, bubble_min.y + bubble_height);
 
     ImGui::GetWindowDrawList()->AddRectFilled(
-        bubble_min, bubble_max, ImGui::GetColorU32(ImVec4(0.20f, 0.20f, 0.20f, 1.0f)), 6.0f);
+        bubble_min, bubble_max, ImGui::GetColorU32(ImVec4(0.20f, 0.20f, 0.20f, 1.0f)), ui_size(6.0f));
     float chip_x = bubble_min.x + horizontal_padding;
     float chip_y = bubble_min.y + vertical_padding;
     for (std::size_t index = 0; index < attachment_labels.size(); ++index) {
@@ -1072,13 +1076,13 @@ void render_user_message(const ChatMessage& message, unsigned int icon_texture) 
         if (chip_x > bubble_min.x + horizontal_padding &&
             chip_x + width > bubble_max.x - horizontal_padding) {
             chip_x = bubble_min.x + horizontal_padding;
-            chip_y += attachment_tag_height + attachment_tag_row_spacing;
+            chip_y += attachment_tag_height() + ui_size(attachment_tag_row_spacing);
         }
         ImGui::PushID(static_cast<int>(index));
         render_attachment_tag("##sent-attachment", ImVec2(chip_x, chip_y), width,
                               attachment_labels[index], false, true, true, icon_texture);
         ImGui::PopID();
-        chip_x += width + attachment_tag_spacing;
+        chip_x += width + ui_size(attachment_tag_spacing);
     }
     if (!message.content.empty()) {
         ImGui::SetCursorScreenPos(ImVec2(bubble_min.x + horizontal_padding,
@@ -1092,15 +1096,17 @@ void render_user_message(const ChatMessage& message, unsigned int icon_texture) 
 constexpr std::size_t file_picker_result_limit = 50;
 constexpr std::size_t file_picker_scan_budget = 300;
 constexpr std::size_t file_picker_visible_rows = 5;
-constexpr float file_picker_row_height = 28.0f;
+float file_picker_row_height() {
+    return ImGui::GetFontSize() + ui_size(12.0f);
+}
 constexpr float file_picker_top_padding = 4.0f;
 constexpr float file_picker_bottom_padding = 6.0f;
 
 float file_picker_height(const ChatPanelState& panel_state) {
     const std::size_t rows = std::clamp(panel_state.file_picker_results.size(),
                                         std::size_t{1}, file_picker_visible_rows);
-    return file_picker_top_padding + rows * file_picker_row_height +
-           file_picker_bottom_padding;
+    return ui_size(file_picker_top_padding) + rows * file_picker_row_height() +
+           ui_size(file_picker_bottom_padding);
 }
 
 std::string lowercase(std::string value) {
@@ -1261,11 +1267,11 @@ void render_file_picker(ChatPanelState& panel_state, std::string& input,
     }
 
     const float height = file_picker_height(panel_state);
-    const ImVec2 popup_min(input_position.x, input_position.y - height - 8.0f);
+    const ImVec2 popup_min(input_position.x, input_position.y - height - ui_size(8.0f));
     ImGui::SetNextWindowPos(popup_min);
     ImGui::SetNextWindowSize(ImVec2(width, height));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, file_picker_top_padding));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, ui_size(file_picker_top_padding)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui_size(6.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(27.0f / 255.0f,
@@ -1278,12 +1284,12 @@ void render_file_picker(ChatPanelState& panel_state, std::string& input,
     if (ImGui::Begin("##file-reference-picker", nullptr, flags)) {
         if (panel_state.file_picker_results.empty()) {
             const ImVec2 row_min = ImGui::GetCursorScreenPos();
-            ImGui::Dummy(ImVec2(width, file_picker_row_height));
+            ImGui::Dummy(ImVec2(width, file_picker_row_height()));
             const char* status = panel_state.file_picker_scan_complete
                 ? "No matching files" : "Searching workspace...";
             ImGui::GetWindowDrawList()->AddText(
-                ImVec2(row_min.x + 12.0f,
-                       row_min.y + (file_picker_row_height - ImGui::GetFontSize()) * 0.5f),
+                ImVec2(row_min.x + ui_size(12.0f),
+                       row_min.y + (file_picker_row_height() - ImGui::GetFontSize()) * 0.5f),
                 ImGui::GetColorU32(ImGuiCol_TextDisabled), status);
         } else {
             for (std::size_t index = 0; index < panel_state.file_picker_results.size(); ++index) {
@@ -1292,7 +1298,7 @@ void render_file_picker(ChatPanelState& panel_state, std::string& input,
                 const bool selected = panel_state.file_picker_selected == index;
                 ImGui::PushID(static_cast<int>(index));
                 const bool clicked = ImGui::InvisibleButton(
-                    "##file-reference-row", ImVec2(width, file_picker_row_height));
+                    "##file-reference-row", ImVec2(width, file_picker_row_height()));
                 const ImVec2 row_min = ImGui::GetItemRectMin();
                 if (selected || ImGui::IsItemHovered()) {
                     ImGui::GetWindowDrawList()->AddRectFilled(
@@ -1302,8 +1308,8 @@ void render_file_picker(ChatPanelState& panel_state, std::string& input,
                                                   51.0f / 255.0f, 1.0f)));
                 }
                 ImGui::GetWindowDrawList()->AddText(
-                    ImVec2(row_min.x + 12.0f,
-                           row_min.y + (file_picker_row_height - ImGui::GetFontSize()) * 0.5f),
+                    ImVec2(row_min.x + ui_size(12.0f),
+                           row_min.y + (file_picker_row_height() - ImGui::GetFontSize()) * 0.5f),
                     ImGui::GetColorU32(ImGuiCol_Text), display_path.c_str());
                 if (selected && selection_changed)
                     ImGui::SetScrollHereY(0.5f);
@@ -1392,10 +1398,12 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         if (panel_state.file_picker_open && panel_state.file_picker_root != project_root)
             panel_state.file_picker_open = false;
         ChatThread& thread = threads[state.selected_thread];
-        constexpr float outer_padding = 8.0f;
-        constexpr float input_height = 58.0f;
-        constexpr float footer_height = 38.0f;
-        constexpr float max_chat_width = 960.0f;
+        const float outer_padding = ui_size(8.0f);
+        const float input_height = std::max(ui_size(58.0f),
+            ImGui::GetTextLineHeight() * 2.0f + ImGui::GetStyle().FramePadding.y * 2.0f);
+        const float footer_height = std::max(ui_size(38.0f),
+            ImGui::GetFrameHeight() + ui_size(6.0f));
+        const float max_chat_width = ui_size(960.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
         const float available_width = ImGui::GetContentRegionAvail().x;
         const float chat_width = std::min(available_width, max_chat_width);
@@ -1409,19 +1417,19 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             if (attachment_rows == 0) {
                 attachment_rows = 1;
             } else if (attachment_row_width > 0.0f &&
-                       attachment_row_width + attachment_tag_spacing + width > tag_area_width) {
+                       attachment_row_width + ui_size(attachment_tag_spacing) + width > tag_area_width) {
                 ++attachment_rows;
                 attachment_row_width = 0.0f;
             }
             if (attachment_row_width > 0.0f)
-                attachment_row_width += attachment_tag_spacing;
+                attachment_row_width += ui_size(attachment_tag_spacing);
             attachment_row_width += width;
         }
         const float attachment_tags_height = attachment_rows == 0 ? 0.0f
-            : attachment_rows * attachment_tag_height +
-              (attachment_rows - 1) * attachment_tag_row_spacing + 6.0f;
+            : attachment_rows * attachment_tag_height() +
+              (attachment_rows - 1) * ui_size(attachment_tag_row_spacing) + ui_size(6.0f);
         const float attachment_error_height = panel_state.attachment_error.empty() ? 0.0f
-            : ImGui::GetFontSize() + 6.0f;
+            : ImGui::GetFontSize() + ui_size(6.0f);
         const float attachment_row_height = attachment_tags_height + attachment_error_height;
         const float composer_height = outer_padding + attachment_row_height +
                                       input_height + footer_height;
@@ -1429,7 +1437,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         const float chat_x = ImGui::GetCursorPosX() + chat_offset;
         const float available_height = ImGui::GetContentRegionAvail().y;
         const float message_height = std::max(
-            0.0f, available_height - composer_height - ImGui::GetStyle().ItemSpacing.y);
+            1.0f, available_height - composer_height - ImGui::GetStyle().ItemSpacing.y);
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         ImGui::SetCursorPosX(chat_x);
         ImGui::BeginChild("##messages", ImVec2(chat_width, message_height), false);
@@ -1524,17 +1532,17 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         const ImVec2 input_pos = ImGui::GetCursorScreenPos();
         const float full_width = chat_width;
         const float total_height = composer_height;
-        const float send_size = 32.0f;
+        const float send_size = ui_size(32.0f);
         const ImVec2 frame_max(input_pos.x + full_width, input_pos.y + total_height);
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
         draw_list->AddRectFilled(input_pos, frame_max,
-                                 ImGui::GetColorU32(ImGuiCol_FrameBg), 6.0f);
+                                 ImGui::GetColorU32(ImGuiCol_FrameBg), ui_size(6.0f));
         draw_list->AddRect(input_pos, frame_max,
-                           ImGui::GetColorU32(ImGuiCol_Border), 6.0f);
+                           ImGui::GetColorU32(ImGuiCol_Border), ui_size(6.0f));
         const float divider_y = input_pos.y + outer_padding + attachment_row_height + input_height;
-        draw_list->AddLine(ImVec2(input_pos.x + 1.0f, divider_y),
-                           ImVec2(frame_max.x - 1.0f, divider_y),
-                           ImGui::GetColorU32(ImGuiCol_Border), 1.0f);
+        draw_list->AddLine(ImVec2(input_pos.x + ui_size(1.0f), divider_y),
+                           ImVec2(frame_max.x - ui_size(1.0f), divider_y),
+                           ImGui::GetColorU32(ImGuiCol_Border), ui_size(1.0f));
 
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
         ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
@@ -1550,7 +1558,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                 if (tag_x > input_pos.x + outer_padding &&
                     tag_x + width > frame_max.x - outer_padding) {
                     tag_x = input_pos.x + outer_padding;
-                    tag_y += attachment_tag_height + attachment_tag_row_spacing;
+                    tag_y += attachment_tag_height() + ui_size(attachment_tag_row_spacing);
                 }
                 ImGui::PushID(static_cast<int>(i));
                 const bool remove = render_attachment_tag(
@@ -1562,7 +1570,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                     panel_state.attachments.erase(panel_state.attachments.begin() + i);
                     break;
                 }
-                tag_x += width + attachment_tag_spacing;
+                tag_x += width + ui_size(attachment_tag_spacing);
             }
         }
         if (!panel_state.attachment_error.empty()) {
@@ -1655,12 +1663,12 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         const float selector_y = divider_y + (footer_height - ImGui::GetFrameHeight()) * 0.5f;
         const float selector_x = input_pos.x + outer_padding;
         const float controls_x = selector_x;
-        const float selector_available = std::max(0.0f, send_pos.x - controls_x - 50.0f);
-        const float model_width = std::min(190.0f, selector_available * 0.48f);
-        const float reasoning_width = std::min(140.0f, std::max(0.0f, selector_available * 0.28f));
+        const float selector_available = std::max(0.0f, send_pos.x - controls_x - ui_size(50.0f));
+        const float model_width = std::min(ui_size(190.0f), selector_available * 0.48f);
+        const float reasoning_width = std::min(ui_size(140.0f), std::max(0.0f, selector_available * 0.28f));
         const auto active_model = std::find_if(provider->models.begin(), provider->models.end(),
             [&](const ModelOption& model) { return model.id == selected_model; });
-        if (active_model != provider->models.end() && model_width >= 60.0f) {
+        if (active_model != provider->models.end() && model_width >= ui_size(60.0f)) {
             ImGui::SetCursorScreenPos(ImVec2(controls_x, selector_y));
             ImGui::SetNextItemWidth(model_width);
             ImGui::BeginDisabled(is_generating);
@@ -1696,10 +1704,10 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             ImGui::EndDisabled();
             const auto reasoning_model = std::find_if(provider->models.begin(), provider->models.end(),
                 [&](const ModelOption& model) { return model.id == selected_model; });
-            if (reasoning_width >= 60.0f) {
+            if (reasoning_width >= ui_size(60.0f)) {
                 const std::string effort_label = selected_reasoning_effort.empty()
                     ? "Default" : selected_reasoning_effort;
-                ImGui::SetCursorScreenPos(ImVec2(controls_x + model_width + 8.0f, selector_y));
+                ImGui::SetCursorScreenPos(ImVec2(controls_x + model_width + ui_size(8.0f), selector_y));
                 ImGui::SetNextItemWidth(reasoning_width);
                 if (ImGui::BeginCombo("##reasoning-selector", effort_label.c_str())) {
                     if (reasoning_model == provider->models.end() || reasoning_model->reasoning_efforts.empty()) {
@@ -1721,9 +1729,9 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             if (reasoning_model != provider->models.end() &&
                 !reasoning_model->permission_modes.empty()) {
                 const float permission_width = std::min(
-                    140.0f, std::max(0.0f, selector_available - model_width -
-                                            reasoning_width - 16.0f));
-                if (permission_width >= 60.0f) {
+                    ui_size(140.0f), std::max(0.0f, selector_available - model_width -
+                                            reasoning_width - ui_size(16.0f)));
+                if (permission_width >= ui_size(60.0f)) {
                     const PermissionOption* selected_permission = nullptr;
                     for (const PermissionOption& option : reasoning_model->permission_modes) {
                         if (option.value == selected_permission_mode) {
@@ -1734,7 +1742,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                     const char* permission_label = selected_permission == nullptr
                         ? "Default" : selected_permission->name.c_str();
                     ImGui::SetCursorScreenPos(ImVec2(
-                        controls_x + model_width + 8.0f + reasoning_width + 8.0f,
+                        controls_x + model_width + ui_size(8.0f) + reasoning_width + ui_size(8.0f),
                         selector_y));
                     ImGui::SetNextItemWidth(permission_width);
                     ImGui::BeginDisabled(is_generating);
@@ -1756,20 +1764,20 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                 }
             }
         }
-        const ImVec2 attach_pos(send_pos.x - 42.0f, selector_y);
+        const ImVec2 attach_pos(send_pos.x - ui_size(42.0f), selector_y);
         ImGui::SetCursorScreenPos(attach_pos);
         const bool attach_clicked = ImGui::Button("##attach-files",
-                                                   ImVec2(30.0f, ImGui::GetFrameHeight()));
+                                                   ImVec2(ui_size(30.0f), ImGui::GetFrameHeight()));
         const ImVec2 attach_min = ImGui::GetItemRectMin();
         const ImVec2 attach_max = ImGui::GetItemRectMax();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Attach files");
         if (panel_state.paperclip_icon_texture != 0) {
-            const ImVec2 icon_min((attach_min.x + attach_max.x - 14.0f) * 0.5f,
-                                  (attach_min.y + attach_max.y - 16.0f) * 0.5f);
+            const ImVec2 icon_min((attach_min.x + attach_max.x - ui_size(14.0f)) * 0.5f,
+                                  (attach_min.y + attach_max.y - ui_size(16.0f)) * 0.5f);
             draw_list->AddImage(
                 ImTextureRef(static_cast<ImTextureID>(panel_state.paperclip_icon_texture)),
-                icon_min, ImVec2(icon_min.x + 14.0f, icon_min.y + 16.0f),
+                icon_min, ImVec2(icon_min.x + ui_size(14.0f), icon_min.y + ui_size(16.0f)),
                 ImVec2(0, 0), ImVec2(1, 1), ImGui::GetColorU32(ImGuiCol_Text));
         }
         if (attach_clicked) {
@@ -1784,24 +1792,24 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             ImGui::IsItemActive() ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f)
             : ImGui::IsItemHovered() ? ImVec4(0.42f, 0.42f, 0.42f, 1.0f)
                                      : ImVec4(0.30f, 0.30f, 0.30f, 1.0f));
-        draw_list->AddRectFilled(button_min, button_max, button_color, 6.0f);
+        draw_list->AddRectFilled(button_min, button_max, button_color, ui_size(6.0f));
         const ImVec2 arrow_center((button_min.x + button_max.x) * 0.5f,
                                   (button_min.y + button_max.y) * 0.5f);
         const ImU32 arrow_color = ImGui::GetColorU32(ImGui::IsItemActive()
             ? ImVec4(0.08f, 0.08f, 0.08f, 1.0f)
             : ImVec4(0.94f, 0.94f, 0.94f, 1.0f));
         if (is_generating) {
-            const ImVec2 half_size(5.0f, 5.0f);
+            const ImVec2 half_size(ui_size(5.0f), ui_size(5.0f));
             draw_list->AddRectFilled(ImVec2(arrow_center.x - half_size.x, arrow_center.y - half_size.y),
                                      ImVec2(arrow_center.x + half_size.x, arrow_center.y + half_size.y),
-                                     arrow_color, 1.0f);
+                                     arrow_color, ui_size(1.0f));
         } else {
-            draw_list->AddLine(ImVec2(arrow_center.x, arrow_center.y + 6.0f),
-                               ImVec2(arrow_center.x, arrow_center.y - 5.0f), arrow_color, 2.0f);
-            draw_list->AddLine(ImVec2(arrow_center.x, arrow_center.y - 5.0f),
-                               ImVec2(arrow_center.x - 4.5f, arrow_center.y - 0.5f), arrow_color, 2.0f);
-            draw_list->AddLine(ImVec2(arrow_center.x, arrow_center.y - 5.0f),
-                               ImVec2(arrow_center.x + 4.5f, arrow_center.y - 0.5f), arrow_color, 2.0f);
+            draw_list->AddLine(ImVec2(arrow_center.x, arrow_center.y + ui_size(6.0f)),
+                               ImVec2(arrow_center.x, arrow_center.y - ui_size(5.0f)), arrow_color, ui_size(2.0f));
+            draw_list->AddLine(ImVec2(arrow_center.x, arrow_center.y - ui_size(5.0f)),
+                               ImVec2(arrow_center.x - ui_size(4.5f), arrow_center.y - ui_size(0.5f)), arrow_color, ui_size(2.0f));
+            draw_list->AddLine(ImVec2(arrow_center.x, arrow_center.y - ui_size(5.0f)),
+                               ImVec2(arrow_center.x + ui_size(4.5f), arrow_center.y - ui_size(0.5f)), arrow_color, ui_size(2.0f));
         }
         ImGui::SetCursorScreenPos(input_pos);
         ImGui::Dummy(ImVec2(full_width, total_height));

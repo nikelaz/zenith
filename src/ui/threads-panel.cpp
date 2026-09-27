@@ -1,5 +1,6 @@
 #include "threads-panel.h"
 #include "imgui.h"
+#include "ui-scale.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -131,16 +132,15 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
     ImGui::PushID(thread.id.c_str());
     const ImGuiStyle& style = ImGui::GetStyle();
     const float width = ImGui::GetContentRegionAvail().x;
-    constexpr float horizontal_padding = 12.0f;
-    constexpr float vertical_padding = 9.0f;
+    const float horizontal_padding = ui_size(12.0f);
+    const float vertical_padding = ui_size(9.0f);
     const float description_width = std::max(1.0f, width - horizontal_padding * 2.0f);
     ImFont* description_font = ImGui::GetFont();
-    const float description_font_size = ImGui::GetFontSize() * 0.9f;
+    ImGui::PushFont(description_font, style.FontSizeBase * 0.9f);
     const float description_height = thread.description.empty()
         ? 0.0f
-        : description_font->CalcTextSizeA(description_font_size, description_width,
-            description_width, thread.description.c_str(),
-            thread.description.c_str() + thread.description.size()).y;
+        : ImGui::CalcTextSize(thread.description.c_str(), nullptr, false, description_width).y;
+    ImGui::PopFont();
     const float description_spacing = thread.description.empty() ? 0.0f : style.ItemSpacing.y;
     const float card_height = vertical_padding * 2.0f + ImGui::GetTextLineHeight() +
                               description_spacing + description_height;
@@ -154,9 +154,9 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
         : hovered ? ImVec4(0.15f, 0.15f, 0.15f, 1.0f)
                   : ImVec4(0.11f, 0.11f, 0.11f, 1.0f);
     ImGui::GetWindowDrawList()->AddRectFilled(card_min, card_max,
-        ImGui::GetColorU32(card_color), 8.0f);
+        ImGui::GetColorU32(card_color), ui_size(8.0f));
 
-    ImGui::PushStyleVar(ImGuiStyleVar_SelectableRounding, 8.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_SelectableRounding, ui_size(8.0f));
     const ImVec4 transparent(0.0f, 0.0f, 0.0f, 0.0f);
     ImGui::PushStyleColor(ImGuiCol_Header, transparent);
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, transparent);
@@ -171,14 +171,14 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
         state.selected_thread = thread_index;
     }
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui_size(6.0f), ui_size(6.0f)));
     if (ImGui::BeginPopupContextItem("thread_context", ImGuiPopupFlags_MouseButtonRight)) {
-        constexpr float menu_item_padding_x = 13.0f;
-        constexpr float menu_item_padding_y = 8.0f;
+        const float menu_item_padding_x = ui_size(13.0f);
+        const float menu_item_padding_y = ui_size(8.0f);
         const ImVec2 label_size = ImGui::CalcTextSize("Delete thread");
         const ImVec2 menu_item_pos = ImGui::GetCursorScreenPos();
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_SelectableRounding, 6.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_SelectableRounding, ui_size(6.0f));
         const bool delete_thread = ImGui::Selectable(
             "##delete-thread-item", false, 0,
             ImVec2(label_size.x + menu_item_padding_x * 2.0f,
@@ -209,9 +209,9 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
     if (!thread.description.empty()) {
         ImGui::SetCursorScreenPos(
             ImVec2(text_x, title_y + ImGui::GetTextLineHeight() + description_spacing));
-        ImGui::PushFont(description_font, description_font_size);
+        ImGui::PushFont(description_font, style.FontSizeBase * 0.9f);
         ImGui::PushStyleColor(ImGuiCol_Text, description_color);
-        ImGui::PushTextWrapPos(card_max.x - horizontal_padding);
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + description_width);
         ImGui::TextUnformatted(thread.description.c_str());
         ImGui::PopTextWrapPos();
         ImGui::PopStyleColor();
@@ -222,7 +222,7 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
 
     if (item_hovered) {
         ImGui::GetWindowDrawList()->AddRect(card_min, card_max,
-            ImGui::GetColorU32(ImGuiCol_HeaderHovered), 8.0f);
+            ImGui::GetColorU32(ImGuiCol_HeaderHovered), ui_size(8.0f));
     }
 
     ImGui::PopID();
@@ -241,20 +241,25 @@ void render_threads_panel(ApplicationState& state) {
     bool open_project_delete_confirmation = false;
 
     ImGui::Begin("Threads");
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 4.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui_size(10.0f), ui_size(4.0f)));
     const ImGuiStyle& style = ImGui::GetStyle();
     ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Projects");
-    constexpr float folder_icon_size = 11.7f;
+    const float folder_icon_size = ui_size(11.7f);
     const float label_width = ImGui::CalcTextSize("Open Project").x;
-    const float new_project_width = style.FramePadding.x * 2.0f + folder_icon_size +
-                                    style.ItemInnerSpacing.x + label_width;
+    const float new_project_label_width = style.FramePadding.x * 2.0f + folder_icon_size +
+                                          style.ItemInnerSpacing.x + label_width;
+    const bool show_project_label = new_project_label_width <= ImGui::GetContentRegionAvail().x;
+    const float new_project_width = show_project_label ? new_project_label_width
+        : style.FramePadding.x * 2.0f + folder_icon_size;
     const float new_project_x = ImGui::GetWindowWidth() - style.WindowPadding.x -
                                 new_project_width;
-    ImGui::SameLine(new_project_x);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+    if (new_project_x >= ImGui::GetCursorPosX() + ImGui::CalcTextSize("Projects").x +
+                             style.ItemSpacing.x)
+        ImGui::SameLine(new_project_x);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui_size(6.0f));
     const bool open_project_clicked = ImGui::Button("##open-project",
-        ImVec2(new_project_width, 0.0f));
+        ImVec2(std::min(new_project_width, ImGui::GetContentRegionAvail().x), 0.0f));
     const ImVec2 button_min = ImGui::GetItemRectMin();
     const ImVec2 button_max = ImGui::GetItemRectMax();
     const float button_height = button_max.y - button_min.y;
@@ -264,8 +269,11 @@ void render_threads_panel(ApplicationState& state) {
     render_folder_icon(draw_list, ImVec2(folder_x, folder_y), folder_icon_size);
     const float label_x = folder_x + folder_icon_size + style.ItemInnerSpacing.x;
     const float label_y = button_min.y + (button_height - ImGui::GetTextLineHeight()) * 0.5f;
-    draw_list->AddText(ImVec2(label_x, label_y), ImGui::GetColorU32(ImGuiCol_Text),
-                       "Open Project");
+    if (show_project_label)
+        draw_list->AddText(ImVec2(label_x, label_y), ImGui::GetColorU32(ImGuiCol_Text),
+                           "Open Project");
+    else if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Open Project");
     ImGui::PopStyleVar();
     if (open_project_clicked)
         open_project(state);
@@ -277,7 +285,7 @@ void render_threads_panel(ApplicationState& state) {
         ImGui::PushID(directory.c_str());
         const float row_height = ImGui::GetFrameHeight();
         const float action_gap = style.ItemInnerSpacing.x;
-        constexpr float action_size = 19.2f;
+        const float action_size = ui_size(19.2f);
         const float action_width = action_size;
         const float header_width = std::max(1.0f,
             ImGui::GetContentRegionAvail().x - action_width - action_gap);
@@ -287,14 +295,14 @@ void render_threads_panel(ApplicationState& state) {
         const ImVec2 header_min = ImGui::GetItemRectMin();
         const ImVec2 header_max = ImGui::GetItemRectMax();
 
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui_size(6.0f), ui_size(6.0f)));
         if (ImGui::BeginPopupContextItem("project_context", ImGuiPopupFlags_MouseButtonRight)) {
-            constexpr float menu_item_padding_x = 13.0f;
-            constexpr float menu_item_padding_y = 8.0f;
+            const float menu_item_padding_x = ui_size(13.0f);
+            const float menu_item_padding_y = ui_size(8.0f);
             const ImVec2 label_size = ImGui::CalcTextSize("Delete project");
             const ImVec2 menu_item_pos = ImGui::GetCursorScreenPos();
             ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
-            ImGui::PushStyleVar(ImGuiStyleVar_SelectableRounding, 6.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_SelectableRounding, ui_size(6.0f));
             const bool delete_project = ImGui::Selectable(
                 "##delete-project-item", false, 0,
                 ImVec2(label_size.x + menu_item_padding_x * 2.0f,
@@ -321,13 +329,13 @@ void render_threads_panel(ApplicationState& state) {
                                   header_min.y + row_height * 0.5f);
         ImVec2 arrow_points[3];
         if (project.expanded) {
-            arrow_points[0] = ImVec2(arrow_center.x - 3.2f, arrow_center.y - 2.0f);
-            arrow_points[1] = ImVec2(arrow_center.x, arrow_center.y + 2.0f);
-            arrow_points[2] = ImVec2(arrow_center.x + 3.2f, arrow_center.y - 2.0f);
+            arrow_points[0] = ImVec2(arrow_center.x - ui_size(3.2f), arrow_center.y - ui_size(2.0f));
+            arrow_points[1] = ImVec2(arrow_center.x, arrow_center.y + ui_size(2.0f));
+            arrow_points[2] = ImVec2(arrow_center.x + ui_size(3.2f), arrow_center.y - ui_size(2.0f));
         } else {
-            arrow_points[0] = ImVec2(arrow_center.x - 2.0f, arrow_center.y - 3.2f);
-            arrow_points[1] = ImVec2(arrow_center.x + 2.0f, arrow_center.y);
-            arrow_points[2] = ImVec2(arrow_center.x - 2.0f, arrow_center.y + 3.2f);
+            arrow_points[0] = ImVec2(arrow_center.x - ui_size(2.0f), arrow_center.y - ui_size(3.2f));
+            arrow_points[1] = ImVec2(arrow_center.x + ui_size(2.0f), arrow_center.y);
+            arrow_points[2] = ImVec2(arrow_center.x - ui_size(2.0f), arrow_center.y + ui_size(3.2f));
         }
         const float name_value = std::min(1.0f,
             (project.expanded ? 0.90f : 0.70f) + (header_hovered ? 0.10f : 0.0f));
@@ -335,8 +343,8 @@ void render_threads_panel(ApplicationState& state) {
                                     (header_hovered ? 0.10f : 0.0f);
         const ImU32 arrow_color = ImGui::GetColorU32(
             ImVec4(chevron_value, chevron_value, chevron_value, 1.0f));
-        draw_list->AddLine(arrow_points[0], arrow_points[1], arrow_color, 1.6f);
-        draw_list->AddLine(arrow_points[1], arrow_points[2], arrow_color, 1.6f);
+        draw_list->AddLine(arrow_points[0], arrow_points[1], arrow_color, ui_size(1.6f));
+        draw_list->AddLine(arrow_points[1], arrow_points[2], arrow_color, ui_size(1.6f));
         const float project_text_x = header_min.x + row_height * 0.69f;
         const float project_text_y = header_min.y + (row_height - ImGui::GetTextLineHeight()) * 0.5f;
         draw_list->PushClipRect(ImVec2(project_text_x, header_min.y), header_max, true);
@@ -349,7 +357,7 @@ void render_threads_panel(ApplicationState& state) {
         ImGui::SameLine(0.0f, action_gap);
         ImGui::SetCursorScreenPos(ImVec2(header_max.x + action_gap,
                                          header_min.y + (row_height - action_size) * 0.5f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 5.6f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui_size(5.6f));
         ImGui::PushStyleColor(ImGuiCol_Button, style.Colors[ImGuiCol_FrameBg]);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, style.Colors[ImGuiCol_HeaderHovered]);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, style.Colors[ImGuiCol_HeaderActive]);
@@ -359,8 +367,8 @@ void render_threads_panel(ApplicationState& state) {
         const ImVec2 add_center(
             std::floor((add_button_min.x + add_button_max.x) * 0.5f) - 0.5f,
             std::floor((add_button_min.y + add_button_max.y) * 0.5f) - 0.5f);
-        constexpr float plus_half_size = 3.2f;
-        constexpr float plus_thickness = 1.44f;
+        const float plus_half_size = ui_size(3.2f);
+        const float plus_thickness = ui_size(1.44f);
         const ImU32 add_color = ImGui::GetColorU32(ImGuiCol_Text);
         draw_list->AddLine(ImVec2(add_center.x - plus_half_size, add_center.y),
                            ImVec2(add_center.x + plus_half_size, add_center.y),
@@ -388,7 +396,7 @@ void render_threads_panel(ApplicationState& state) {
     if (open_delete_confirmation)
         ImGui::OpenPopup("Confirm thread deletion");
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui_size(6.0f));
     if (ImGui::BeginPopupModal("Confirm project deletion", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         const bool valid_pending = pending_project_delete &&
@@ -401,8 +409,8 @@ void render_threads_panel(ApplicationState& state) {
             ImGui::TextUnformatted("The project directory and its files will remain on disk.");
             ImGui::Spacing();
 
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-            const bool delete_project = ImGui::Button("Delete", ImVec2(120.0f, 0.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui_size(6.0f));
+            const bool delete_project = ImGui::Button("Delete", ImVec2(ui_size(120.0f), 0.0f));
             ImGui::PopStyleVar();
             if (delete_project) {
                 state.projects.erase(state.projects.begin() +
@@ -420,8 +428,8 @@ void render_threads_panel(ApplicationState& state) {
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-            const bool cancel_delete = ImGui::Button("Cancel", ImVec2(120.0f, 0.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui_size(6.0f));
+            const bool cancel_delete = ImGui::Button("Cancel", ImVec2(ui_size(120.0f), 0.0f));
             ImGui::PopStyleVar();
             if (cancel_delete) {
                 pending_project_delete.reset();
@@ -447,8 +455,8 @@ void render_threads_panel(ApplicationState& state) {
             ImGui::TextUnformatted("This cannot be undone.");
             ImGui::Spacing();
 
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-            const bool delete_thread = ImGui::Button("Delete", ImVec2(120.0f, 0.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui_size(6.0f));
+            const bool delete_thread = ImGui::Button("Delete", ImVec2(ui_size(120.0f), 0.0f));
             ImGui::PopStyleVar();
             if (delete_thread) {
                 project.threads.erase(project.threads.begin() +
@@ -466,8 +474,8 @@ void render_threads_panel(ApplicationState& state) {
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
-            const bool cancel_delete = ImGui::Button("Cancel", ImVec2(120.0f, 0.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui_size(6.0f));
+            const bool cancel_delete = ImGui::Button("Cancel", ImVec2(ui_size(120.0f), 0.0f));
             ImGui::PopStyleVar();
             if (cancel_delete) {
                 pending_delete.reset();

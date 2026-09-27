@@ -5,6 +5,7 @@
 #include <windows.h>
 #endif
 #include "ui-system.h"
+#include "ui-scale.h"
 #include "card.h"
 #include "application-icon.h"
 #include "file-attachment-icon.h"
@@ -82,7 +83,8 @@ std::filesystem::path bundled_font_path(const char* family, const char* filename
     return {};
 }
 
-ImFont* load_bundled_font(const char* family, const char* filename, bool pixel_snap) {
+ImFont* load_bundled_font(const char* family, const char* filename, bool pixel_snap,
+                          float font_size) {
     const std::filesystem::path path = bundled_font_path(family, filename);
     if (path.empty())
         return nullptr;
@@ -92,9 +94,9 @@ ImFont* load_bundled_font(const char* family, const char* filename, bool pixel_s
         config.OversampleH = 1;
         config.OversampleV = 1;
         config.RasterizerMultiply = 1.1f;
-        return ImGui::GetIO().Fonts->AddFontFromFileTTF(path.string().c_str(), 16.0f, &config);
+        return ImGui::GetIO().Fonts->AddFontFromFileTTF(path.string().c_str(), font_size, &config);
     }
-    return ImGui::GetIO().Fonts->AddFontFromFileTTF(path.string().c_str(), 16.0f);
+    return ImGui::GetIO().Fonts->AddFontFromFileTTF(path.string().c_str(), font_size);
 }
 
 unsigned int create_icon_texture(int width, int height, const unsigned char* pixels) {
@@ -140,31 +142,32 @@ bool window_control_button(const char* id, WindowControlIcon icon,
                         (button_min.y + button_max.y) * 0.5f);
     const ImU32 color = ImGui::GetColorU32(
         hovered ? ImGuiCol_Text : ImGuiCol_TextDisabled);
-    constexpr float stroke_width = 1.4f;
+    const float stroke_width = ui_size(1.4f);
     if (icon == WindowControlIcon::Minimize) {
-        constexpr float half_line_width = 4.7f;
+        const float half_line_width = ui_size(4.7f);
         draw_list->AddLine(ImVec2(center.x - half_line_width, center.y),
                            ImVec2(center.x + half_line_width, center.y),
                            color, stroke_width);
     } else if (icon == WindowControlIcon::Maximize) {
-        constexpr float half_icon_size = 4.5f;
+        const float half_icon_size = ui_size(4.5f);
         draw_list->AddRect(
             ImVec2(center.x - half_icon_size, center.y - half_icon_size),
             ImVec2(center.x + half_icon_size, center.y + half_icon_size),
-            color, 1.5f, 0, stroke_width);
+            color, ui_size(1.5f), 0, stroke_width);
     } else {
         draw_list->AddLine(
-            ImVec2(center.x - 4.0f, center.y - 4.0f),
-            ImVec2(center.x + 4.0f, center.y + 4.0f), color, stroke_width);
+            ImVec2(center.x - ui_size(4.0f), center.y - ui_size(4.0f)),
+            ImVec2(center.x + ui_size(4.0f), center.y + ui_size(4.0f)), color, stroke_width);
         draw_list->AddLine(
-            ImVec2(center.x + 4.0f, center.y - 4.0f),
-            ImVec2(center.x - 4.0f, center.y + 4.0f), color, stroke_width);
+            ImVec2(center.x + ui_size(4.0f), center.y - ui_size(4.0f)),
+            ImVec2(center.x - ui_size(4.0f), center.y + ui_size(4.0f)), color, stroke_width);
     }
     return clicked;
 }
 
-void set_premiere_theme() {
+void set_premiere_theme(const ApplicationState& state) {
     ImGuiStyle& style = ImGui::GetStyle();
+    style = ImGuiStyle();
     style.Alpha = 1.0f;
     style.DisabledAlpha = 0.55f;
     style.WindowPadding = ImVec2(12.0f, 12.0f);
@@ -244,6 +247,9 @@ void set_premiere_theme() {
     colors[ImGuiCol_NavWindowingHighlight] = ImVec4(1.0f, 1.0f, 1.0f, 0.7f);
     colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.55f);
     colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.65f);
+    style.ScaleAllSizes(state.ui_scale);
+    style.FontSizeBase = static_cast<float>(state.base_font_size);
+    style.FontScaleMain = state.ui_scale;
 }
 
 template <typename EventFn>
@@ -320,14 +326,15 @@ Result UISystem::init() {
     m_main_context = ImGui::GetCurrentContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    ImFont* interface_font = load_bundled_font(
-        "IBM-Plex-Sans", "IBMPlexSans-Regular.ttf", false);
-    if (interface_font == nullptr)
-        interface_font = io.Fonts->AddFontDefault();
-    io.FontDefault = interface_font;
+    apply_appearance_settings();
+    ImFontConfig font_config;
+    font_config.SizePixels = static_cast<float>(m_state.base_font_size);
+    io.FontDefault = load_bundled_font(
+        "IBM-Plex-Sans", "IBMPlexSans-Regular.ttf", false, font_config.SizePixels);
+    if (io.FontDefault == nullptr)
+        io.FontDefault = io.Fonts->AddFontDefault(&font_config);
     m_chat_panel_state.monospace_font = load_bundled_font(
-        "JetBrains-Mono", "JetBrainsMono-Regular.ttf", true);
-    set_premiere_theme();
+        "JetBrains-Mono", "JetBrainsMono-Regular.ttf", true, font_config.SizePixels);
 
     if (!ImGui_ImplGlfw_InitForOpenGL(m_window, true)) {
         ImGui::DestroyContext();
@@ -350,8 +357,20 @@ Result UISystem::init() {
     m_chat_panel_state.paperclip_icon_texture = create_icon_texture(
         paperclip_icon::width, paperclip_icon::height, paperclip_icon::pixels);
     m_initialized = true;
-
     return result_ok();
+}
+
+void UISystem::apply_appearance_settings() {
+    m_state.base_font_size = std::clamp(m_state.base_font_size, 12, 24);
+    m_state.ui_scale = std::clamp(m_state.ui_scale, 0.75f, 2.0f);
+    set_premiere_theme(m_state);
+    if (m_settings_context != nullptr) {
+        ImGui::SetCurrentContext(m_settings_context);
+        set_premiere_theme(m_state);
+        ImGui::SetCurrentContext(m_main_context);
+    }
+    m_applied_base_font_size = m_state.base_font_size;
+    m_applied_ui_scale = m_state.ui_scale;
 }
 
 void UISystem::deinit() {
@@ -405,6 +424,14 @@ void UISystem::render_frame_to_backbuffer() {
     if (m_open_settings_requested) {
         m_open_settings_requested = false;
         open_settings_window();
+    }
+
+    if (!m_appearance_edit_active &&
+        (m_applied_base_font_size != m_state.base_font_size ||
+         m_applied_ui_scale != m_state.ui_scale)) {
+        glfwMakeContextCurrent(m_window);
+        ImGui::SetCurrentContext(m_main_context);
+        apply_appearance_settings();
     }
 
     new_frame();
@@ -507,8 +534,8 @@ void UISystem::render_frame_to_backbuffer() {
         const float menu_row_height = ImGui::GetFrameHeight();
         float next_item_x = menu_row_pos.x;
         if (m_menu_icon_texture != 0) {
-            constexpr float icon_size = 16.0f;
-            constexpr float icon_label_spacing = 6.0f;
+            const float icon_size = ui_size(16.0f);
+            const float icon_label_spacing = ui_size(6.0f);
             ImGui::GetWindowDrawList()->AddImage(
                 ImTextureRef(static_cast<ImTextureID>(m_menu_icon_texture)),
                 ImVec2(next_item_x, menu_row_pos.y + (menu_row_height - icon_size) * 0.5f),
@@ -522,7 +549,7 @@ void UISystem::render_frame_to_backbuffer() {
                 ImVec2(next_item_x,
                        menu_row_pos.y + (menu_row_height - label_size.y) * 0.5f),
                 ImGui::GetColorU32(ImGuiCol_Text), app_name);
-            next_item_x += label_size.x + 12.0f;
+            next_item_x += label_size.x + ui_size(12.0f);
             ImGui::SetCursorScreenPos(ImVec2(next_item_x, menu_row_pos.y));
         }
         if (ImGui::BeginMenu("File")) {
@@ -551,7 +578,7 @@ void UISystem::render_frame_to_backbuffer() {
         }
 
         const ImGuiStyle& style = ImGui::GetStyle();
-        constexpr float control_width = 36.0f;
+        const float control_width = ui_size(36.0f);
         constexpr float control_count = 3.0f;
         const ImVec2 menu_window_pos = ImGui::GetWindowPos();
         const ImVec2 menu_window_size = ImGui::GetWindowSize();
@@ -678,7 +705,10 @@ bool UISystem::open_settings_window() {
     ImGuiContext* settings_context = ImGui::CreateContext(ImGui::GetIO().Fonts);
     ImGui::SetCurrentContext(settings_context);
     ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
-    set_premiere_theme();
+    ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts.empty()
+        ? nullptr : ImGui::GetIO().Fonts->Fonts[0];
+    ImGui::GetIO().IniFilename = nullptr;
+    set_premiere_theme(m_state);
 
     m_settings_window = settings_window;
     m_settings_context = settings_context;
@@ -705,6 +735,7 @@ void UISystem::close_settings_window() {
     m_settings_window = nullptr;
     m_settings_context = nullptr;
     m_settings_last_frame_time = 0.0;
+    m_appearance_edit_active = false;
     glfwMakeContextCurrent(m_window);
     ImGui::SetCurrentContext(m_main_context);
 }
@@ -768,18 +799,43 @@ void UISystem::render_settings_contents() {
                                               ImGuiWindowFlags_NoScrollWithMouse;
     ImGui::Begin("Settings", nullptr, window_flags);
 
-    ImGui::BeginChild("##settings_sidebar", ImVec2(180.0f, 0.0f),
+    const float sidebar_width = std::min(ui_size(180.0f),
+                                         ImGui::GetContentRegionAvail().x * 0.45f);
+    ImGui::BeginChild("##settings_sidebar", ImVec2(sidebar_width, 0.0f),
                       ImGuiChildFlags_Borders,
                       ImGuiWindowFlags_NoScrollbar |
                           ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::TextDisabled("SETTINGS");
     ImGui::Spacing();
-    ImGui::Selectable("Providers", true);
+    if (ImGui::Selectable("Appearance", m_settings_show_appearance))
+        m_settings_show_appearance = true;
+    if (ImGui::Selectable("Providers", !m_settings_show_appearance))
+        m_settings_show_appearance = false;
     ImGui::EndChild();
     ImGui::SameLine();
 
     ImGui::BeginChild("##settings_content", ImVec2(0.0f, 0.0f));
-    for (std::size_t index = 0; index < m_providers.size(); ++index) {
+    m_appearance_edit_active = false;
+    if (m_settings_show_appearance) {
+        ImGui::TextUnformatted("Appearance");
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Base font size");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::SliderInt("##base_font_size", &m_state.base_font_size, 12, 24, "%d px",
+                          ImGuiSliderFlags_AlwaysClamp);
+        m_appearance_edit_active = ImGui::IsItemActive();
+        ImGui::TextUnformatted("UI scale");
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::SliderFloat("##ui_scale", &m_state.ui_scale, 0.75f, 2.0f, "%.2fx",
+                           ImGuiSliderFlags_AlwaysClamp);
+        m_appearance_edit_active |= ImGui::IsItemActive();
+        ImGui::Spacing();
+        if (ImGui::Button("Reset to defaults")) {
+            m_state.base_font_size = 16;
+            m_state.ui_scale = 1.0f;
+        }
+    }
+    for (std::size_t index = 0; !m_settings_show_appearance && index < m_providers.size(); ++index) {
         Provider& provider = *m_providers[index];
         const char* availability = "Checking...";
         ImVec4 availability_color = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
