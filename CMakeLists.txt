@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(AgentHarness VERSION 0.1.0 LANGUAGES C CXX)
+project(Zenith VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -184,7 +184,7 @@ add_library(imgui_md STATIC "${CMAKE_CURRENT_BINARY_DIR}/imgui_md.cpp")
 target_include_directories(imgui_md PUBLIC third_party/imgui_md)
 target_link_libraries(imgui_md PUBLIC imgui md4c)
 
-add_executable(nadir
+add_executable(Zenith
     src/main.cpp
     src/base/result.cpp
     src/providers/provider_runtime.cpp
@@ -198,29 +198,29 @@ add_executable(nadir
     src/ui/ui-system.cpp
     third_party/tinyfiledialogs/tinyfiledialogs.c
 )
-target_include_directories(nadir PRIVATE third_party/tinyfiledialogs third_party/sqlite3 third_party/json/include)
-target_link_libraries(nadir PRIVATE imgui_md SQLite3)
+target_include_directories(Zenith PRIVATE third_party/tinyfiledialogs third_party/sqlite3 third_party/json/include)
+target_link_libraries(Zenith PRIVATE imgui_md SQLite3)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_libraries(nadir PRIVATE PkgConfig::Fontconfig)
+    target_link_libraries(Zenith PRIVATE PkgConfig::Fontconfig)
 endif()
 
 if(APPLE)
-    target_compile_definitions(nadir PRIVATE GL_SILENCE_DEPRECATION)
+    target_compile_definitions(Zenith PRIVATE GL_SILENCE_DEPRECATION)
 endif()
 
 if(MSVC)
-    target_compile_options(nadir PRIVATE /W4 /permissive-)
+    target_compile_options(Zenith PRIVATE /W4 /permissive-)
 else()
-    target_compile_options(nadir PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(Zenith PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(provider_tests tests/provider_tests.cpp src/base/result.cpp src/providers/provider_runtime.cpp src/providers/codex_provider.cpp src/providers/fake_provider.cpp)
-    target_include_directories(provider_tests PRIVATE third_party/json/include)
-    target_link_libraries(provider_tests PRIVATE GTest::gtest_main)
-    target_compile_options(provider_tests PRIVATE -Wall -Wextra -Wpedantic)
+    add_executable(tests tests/provider_tests.cpp src/base/result.cpp src/providers/provider_runtime.cpp src/providers/codex_provider.cpp src/providers/fake_provider.cpp)
+    target_include_directories(tests PRIVATE third_party/json/include)
+    target_link_libraries(tests PRIVATE GTest::gtest_main)
+    target_compile_options(tests PRIVATE -Wall -Wextra -Wpedantic)
     include(GoogleTest)
-    gtest_discover_tests(provider_tests)
+    gtest_discover_tests(tests)
 endif()

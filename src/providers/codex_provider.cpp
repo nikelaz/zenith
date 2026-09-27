@@ -270,7 +270,7 @@ std::vector<ModelOption> fetch_codex_models(const CodexOptions* options,
     Json initialize = {
         {"method", "initialize"},
         {"id", 1},
-        {"params", {{"clientInfo", {{"name", "nadir"}, {"title", "Nadir"},
+        {"params", {{"clientInfo", {{"name", "Zenith"}, {"title", "Zenith"},
                                       {"version", "0.1.0"}}}}},
     };
     bool success = write_message(process.input, initialize) &&
@@ -358,7 +358,7 @@ Result run_codex(CodexState* state, const TurnRequest* request,
     const Json initialize = {
         {"method", "initialize"},
         {"id", 1},
-        {"params", {{"clientInfo", {{"name", "nadir"}, {"title", "Nadir"}, {"version", "0.1.0"}}}}},
+        {"params", {{"clientInfo", {{"name", "Zenith"}, {"title", "Zenith"}, {"version", "0.1.0"}}}}},
     };
     bool success = write_message(process.input, initialize) &&
                    wait_for_response(&process, 1, &stream, nullptr, &error) &&

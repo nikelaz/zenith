@@ -10,7 +10,7 @@ int main() {
     Result app_init_result = app.init();
     if (app_init_result.status == ResultStatus::Error) {
         const std::string error_message(app_init_result.error);
-        tinyfd_messageBox("nadir", error_message.c_str(), "ok", "error", 1);
+        tinyfd_messageBox("Zenith", error_message.c_str(), "ok", "error", 1);
         return 1;
     }
 

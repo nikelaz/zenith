@@ -10,7 +10,7 @@ constexpr int kWindowHeight = 900;
 static void glfw_error_callback(int code, const char* description) {
     const std::string message = "GLFW error " + std::to_string(code) + ": " +
                                 (description != nullptr ? description : "Unknown error");
-    tinyfd_messageBox("Nadir - GLFW error", message.c_str(), "ok", "error", 1);
+    tinyfd_messageBox("Zenith - GLFW error", message.c_str(), "ok", "error", 1);
 }
 
 Result Application::init() {
@@ -19,7 +19,7 @@ Result Application::init() {
         return glfw_init_result;
     }
 
-    Result state_result = m_state_store.open("nadir.sqlite3");
+    Result state_result = m_state_store.open("Zenith.sqlite3");
     if (state_result.status == ResultStatus::Error) {
         m_state_store.close();
         window_deinit();
@@ -72,7 +72,7 @@ void Application::deinit() {
         Result state_result = m_state_store.save(m_state);
         if (state_result.status == ResultStatus::Error) {
             const std::string error_message(state_result.error);
-            tinyfd_messageBox("Nadir", error_message.c_str(), "ok", "error", 1);
+            tinyfd_messageBox("Zenith", error_message.c_str(), "ok", "error", 1);
         }
     }
     m_provider.reset();
@@ -98,7 +98,7 @@ Result Application::window_init() {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 #endif
 
-    m_window = glfwCreateWindow(kWindowWidth, kWindowHeight, "Nadir", nullptr, nullptr);
+    m_window = glfwCreateWindow(kWindowWidth, kWindowHeight, "Zenith", nullptr, nullptr);
 
     if (m_window == nullptr) {
         glfwTerminate();
@@ -118,13 +118,13 @@ void Application::window_deinit() {
 
 void Application::run() {
     if (!m_initialized) {
-        tinyfd_messageBox("Nadir", "Application has to be initialized with init() before run()",
+        tinyfd_messageBox("Zenith", "Application has to be initialized with init() before run()",
                           "ok", "error", 1);
         return;
     }
 
     if (!m_ui.has_value()) {
-        tinyfd_messageBox("Nadir", "UI System is not initialized in Application", "ok", "error", 1);
+        tinyfd_messageBox("Zenith", "UI System is not initialized in Application", "ok", "error", 1);
         return;
     }
 

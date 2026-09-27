@@ -1,4 +1,3 @@
 # Zenith
 
-An LLM harness orchestrator that is native and a joy to use.
-
+A cross-platform desktop application for orchestrating native LLM harnesses.
