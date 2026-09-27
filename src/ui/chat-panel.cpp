@@ -1,8 +1,10 @@
 #include "chat-panel.h"
+#include "../platform/clipboard-image.h"
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "imgui_md.h"
 #include "misc/cpp/imgui_stdlib.h"
+#include <GLFW/glfw3.h>
 #include <tinyfiledialogs.h>
 #include <algorithm>
 #include <cfloat>
@@ -107,6 +109,49 @@ void choose_attachments(ChatPanelState& panel_state) {
                                   std::istreambuf_iterator<char>());
         panel_state.attachments.push_back(std::move(attachment));
     }
+}
+
+struct ComposerClipboard {
+    ChatPanelState* panel;
+    const char* (*get_text)(ImGuiContext*);
+    void* user_data;
+};
+
+const char* read_composer_clipboard(ImGuiContext* context) {
+    ImGuiPlatformIO& platform = context->PlatformIO;
+    auto* clipboard = static_cast<ComposerClipboard*>(platform.Platform_ClipboardUserData);
+    ClipboardImage image;
+    const Result result = read_clipboard_image(&image);
+    if (result.status == ResultStatus::Ok && !image.content.empty()) {
+        FileAttachment attachment;
+        attachment.filename = "Screenshot" + image.extension;
+        unsigned int number = 2;
+        while (std::any_of(clipboard->panel->attachments.begin(),
+                          clipboard->panel->attachments.end(),
+                          [&](const FileAttachment& existing) {
+                              return existing.filename == attachment.filename;
+                          })) {
+            attachment.filename = "Screenshot " + std::to_string(number++) + image.extension;
+        }
+        attachment.media_type = std::move(image.media_type);
+        attachment.content = std::move(image.content);
+        clipboard->panel->attachments.push_back(std::move(attachment));
+        clipboard->panel->attachment_error.clear();
+        return "";
+    }
+    platform.Platform_ClipboardUserData = clipboard->user_data;
+    glfwGetError(nullptr);
+    const GLFWerrorfun error_callback = glfwSetErrorCallback(nullptr);
+    const char* text = clipboard->get_text == nullptr ? nullptr : clipboard->get_text(context);
+    const char* description = nullptr;
+    const int error = glfwGetError(&description);
+    glfwSetErrorCallback(error_callback);
+    platform.Platform_ClipboardUserData = clipboard;
+    if (error != GLFW_NO_ERROR && error != GLFW_FORMAT_UNAVAILABLE && error_callback != nullptr)
+        error_callback(error, description);
+    if ((text == nullptr || text[0] == '\0') && result.status == ResultStatus::Error)
+        clipboard->panel->attachment_error = result.error;
+    return text;
 }
 
 void begin_chat_component() {
@@ -1532,10 +1577,17 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             ImGui::SetKeyboardFocusHere();
             panel_state.restore_input_focus = false;
         }
+        ImGuiPlatformIO& platform = ImGui::GetPlatformIO();
+        ComposerClipboard clipboard{&panel_state, platform.Platform_GetClipboardTextFn,
+                                    platform.Platform_ClipboardUserData};
+        platform.Platform_GetClipboardTextFn = read_composer_clipboard;
+        platform.Platform_ClipboardUserData = &clipboard;
         bool enter = ImGui::InputTextMultiline(
             "##message-input", &message_input,
             ImVec2(full_width - outer_padding * 2.0f, input_height),
             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine);
+        platform.Platform_GetClipboardTextFn = clipboard.get_text;
+        platform.Platform_ClipboardUserData = clipboard.user_data;
         const bool input_active = ImGui::IsItemActive();
         ImGuiInputTextState* input_state = ImGui::GetInputTextState(ImGui::GetItemID());
         if (panel_state.file_picker_open && input_active && input_state != nullptr &&

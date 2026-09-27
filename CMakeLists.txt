@@ -45,6 +45,17 @@ else()
     set(CHILD_PROCESS_SOURCE src/process/child-process-posix.cpp)
 endif()
 
+if(WIN32)
+    set(CLIPBOARD_IMAGE_SOURCE src/platform/clipboard-image-win32.cpp)
+elseif(APPLE)
+    enable_language(OBJCXX)
+    set(CMAKE_OBJCXX_STANDARD 20)
+    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
+    set(CLIPBOARD_IMAGE_SOURCE src/platform/clipboard-image-macos.mm)
+else()
+    set(CLIPBOARD_IMAGE_SOURCE src/platform/clipboard-image-linux.cpp)
+endif()
+
 add_library(imgui STATIC
     third_party/imgui/imgui.cpp
     third_party/imgui/imgui_draw.cpp
@@ -71,6 +82,7 @@ add_executable(Zenith
     src/main.cpp
     src/base/result.cpp
     ${CHILD_PROCESS_SOURCE}
+    ${CLIPBOARD_IMAGE_SOURCE}
     src/providers/provider_runtime.cpp
     src/providers/codex_provider.cpp
     src/providers/github_copilot_provider.cpp
@@ -112,6 +124,11 @@ else()
 endif()
 target_include_directories(Zenith PRIVATE third_party/tinyfiledialogs third_party/sqlite3 third_party/json/include)
 target_link_libraries(Zenith PRIVATE imgui_md SQLite3)
+if(WIN32)
+    target_link_libraries(Zenith PRIVATE gdiplus ole32)
+elseif(APPLE)
+    target_link_libraries(Zenith PRIVATE "-framework AppKit")
+endif()
 if(GLFW_BUILD_WAYLAND)
     target_compile_definitions(Zenith PRIVATE ZENITH_HAS_WAYLAND_WINDOW_DRAG)
 endif()
