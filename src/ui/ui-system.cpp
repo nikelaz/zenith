@@ -1,5 +1,6 @@
 #include "ui-system.h"
 #include "card.h"
+#include "application-icon.h"
 #include "chat-panel.h"
 #include "dock-area.h"
 #include "imgui.h"
@@ -9,6 +10,7 @@
 #include <GLFW/glfw3.h>
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <cstdlib>
 #include <cstdint>
 #include <filesystem>
@@ -16,6 +18,10 @@
 #include <string>
 #include <system_error>
 #include <vector>
+
+#ifdef ZENITH_HAS_WAYLAND_WINDOW_DRAG
+extern "C" int zenith_begin_wayland_window_drag(GLFWwindow* window);
+#endif
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -83,6 +89,72 @@ ImFont* load_bundled_font(const char* family, const char* filename, bool pixel_s
         return ImGui::GetIO().Fonts->AddFontFromFileTTF(path.string().c_str(), 16.0f, &config);
     }
     return ImGui::GetIO().Fonts->AddFontFromFileTTF(path.string().c_str(), 16.0f);
+}
+
+unsigned int create_menu_icon_texture() {
+    unsigned int texture = 0;
+    glGenTextures(1, &texture);
+    if (texture == 0)
+        return 0;
+
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, application_icon::width,
+                 application_icon::height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                 application_icon::pixels);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return texture;
+}
+
+enum class WindowControlIcon {
+    Minimize,
+    Maximize,
+    Close
+};
+
+bool window_control_button(const char* id, WindowControlIcon icon,
+                           float width, float height) {
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(width, height));
+    const ImVec2 button_min = ImGui::GetItemRectMin();
+    const ImVec2 button_max = ImGui::GetItemRectMax();
+    const bool hovered = ImGui::IsItemHovered();
+    const bool active = ImGui::IsItemActive();
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    if (hovered || active) {
+        const ImGuiCol background = active ? ImGuiCol_ButtonActive
+                                           : ImGuiCol_ButtonHovered;
+        draw_list->AddRectFilled(button_min, button_max,
+                                 ImGui::GetColorU32(background));
+    }
+
+    const ImVec2 center((button_min.x + button_max.x) * 0.5f,
+                        (button_min.y + button_max.y) * 0.5f);
+    const ImU32 color = ImGui::GetColorU32(
+        hovered ? ImGuiCol_Text : ImGuiCol_TextDisabled);
+    constexpr float stroke_width = 1.4f;
+    if (icon == WindowControlIcon::Minimize) {
+        constexpr float half_line_width = 4.7f;
+        draw_list->AddLine(ImVec2(center.x - half_line_width, center.y),
+                           ImVec2(center.x + half_line_width, center.y),
+                           color, stroke_width);
+    } else if (icon == WindowControlIcon::Maximize) {
+        constexpr float half_icon_size = 4.5f;
+        draw_list->AddRect(
+            ImVec2(center.x - half_icon_size, center.y - half_icon_size),
+            ImVec2(center.x + half_icon_size, center.y + half_icon_size),
+            color, 1.5f, 0, stroke_width);
+    } else {
+        draw_list->AddLine(
+            ImVec2(center.x - 4.0f, center.y - 4.0f),
+            ImVec2(center.x + 4.0f, center.y + 4.0f), color, stroke_width);
+        draw_list->AddLine(
+            ImVec2(center.x + 4.0f, center.y - 4.0f),
+            ImVec2(center.x - 4.0f, center.y + 4.0f), color, stroke_width);
+    }
+    return clicked;
 }
 
 void set_premiere_theme() {
@@ -253,6 +325,7 @@ Result UISystem::init() {
         return result_error("Failed to initialize Dear ImGui OpenGL 3 backend");
     }
 
+    m_menu_icon_texture = create_menu_icon_texture();
     m_initialized = true;
 
     return result_ok();
@@ -262,6 +335,10 @@ void UISystem::deinit() {
     close_settings_window();
     glfwMakeContextCurrent(m_window);
     ImGui::SetCurrentContext(m_main_context);
+    if (m_menu_icon_texture != 0) {
+        glDeleteTextures(1, &m_menu_icon_texture);
+        m_menu_icon_texture = 0;
+    }
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
@@ -390,6 +467,28 @@ void UISystem::render_frame_to_backbuffer() {
         }
     }
     if (ImGui::BeginMainMenuBar()) {
+        const ImVec2 menu_row_pos = ImGui::GetCursorScreenPos();
+        const float menu_row_height = ImGui::GetFrameHeight();
+        float next_item_x = menu_row_pos.x;
+        if (m_menu_icon_texture != 0) {
+            constexpr float icon_size = 21.0f;
+            constexpr float icon_label_spacing = 6.0f;
+            ImGui::GetWindowDrawList()->AddImage(
+                ImTextureRef(static_cast<ImTextureID>(m_menu_icon_texture)),
+                ImVec2(next_item_x, menu_row_pos.y + (menu_row_height - icon_size) * 0.5f),
+                ImVec2(next_item_x + icon_size,
+                       menu_row_pos.y + (menu_row_height + icon_size) * 0.5f));
+            next_item_x += icon_size + icon_label_spacing;
+
+            constexpr const char* app_name = "Zenith";
+            const ImVec2 label_size = ImGui::CalcTextSize(app_name);
+            ImGui::GetWindowDrawList()->AddText(
+                ImVec2(next_item_x,
+                       menu_row_pos.y + (menu_row_height - label_size.y) * 0.5f),
+                ImGui::GetColorU32(ImGuiCol_Text), app_name);
+            next_item_x += label_size.x + 12.0f;
+            ImGui::SetCursorScreenPos(ImVec2(next_item_x, menu_row_pos.y));
+        }
         if (ImGui::BeginMenu("File")) {
             if (ImGui::MenuItem("Open Project..."))
                 open_project_dialog(m_state);
@@ -399,6 +498,82 @@ void UISystem::render_frame_to_backbuffer() {
             if (ImGui::MenuItem("Close"))
                 glfwSetWindowShouldClose(m_window, GLFW_TRUE);
             ImGui::EndMenu();
+        }
+
+        const ImGuiStyle& style = ImGui::GetStyle();
+        constexpr float control_width = 36.0f;
+        constexpr float control_count = 3.0f;
+        const ImVec2 menu_window_pos = ImGui::GetWindowPos();
+        const ImVec2 menu_window_size = ImGui::GetWindowSize();
+        const float controls_right = menu_window_pos.x + menu_window_size.x -
+                                     style.WindowBorderSize;
+        const float controls_left = controls_right - control_width * control_count;
+        ImGui::SetCursorScreenPos(ImVec2(controls_left, menu_row_pos.y));
+        if (window_control_button("##MinimizeWindow", WindowControlIcon::Minimize,
+                                  control_width, menu_row_height))
+            glfwIconifyWindow(m_window);
+        ImGui::SetCursorScreenPos(ImVec2(controls_left + control_width,
+                                         menu_row_pos.y));
+        if (window_control_button("##MaximizeWindow", WindowControlIcon::Maximize,
+                                  control_width, menu_row_height)) {
+            if (glfwGetWindowAttrib(m_window, GLFW_MAXIMIZED))
+                glfwRestoreWindow(m_window);
+            else
+                glfwMaximizeWindow(m_window);
+        }
+        ImGui::SetCursorScreenPos(ImVec2(controls_left + control_width * 2.0f,
+                                         menu_row_pos.y));
+        if (window_control_button("##CloseWindow", WindowControlIcon::Close,
+                                  control_width, menu_row_height))
+            glfwSetWindowShouldClose(m_window, GLFW_TRUE);
+
+        const ImVec2 mouse_pos = ImGui::GetMousePos();
+        const ImVec2 menu_window_max(menu_window_pos.x + menu_window_size.x,
+                                     menu_row_pos.y + menu_row_height);
+        const bool mouse_in_title_bar =
+            mouse_pos.x >= menu_window_pos.x && mouse_pos.x < menu_window_max.x &&
+            mouse_pos.y >= menu_row_pos.y && mouse_pos.y < menu_window_max.y;
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            m_dragging_title_bar = mouse_in_title_bar &&
+                                   !ImGui::IsAnyItemHovered() &&
+                                   !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
+#ifdef ZENITH_HAS_WAYLAND_WINDOW_DRAG
+            if (m_dragging_title_bar && glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
+                if (zenith_begin_wayland_window_drag(m_window))
+                    glfwFocusWindow(m_window);
+                m_dragging_title_bar = false;
+            }
+#endif
+            if (m_dragging_title_bar) {
+                glfwGetWindowPos(m_window, &m_title_bar_drag_window_x,
+                                 &m_title_bar_drag_window_y);
+                double cursor_x = 0.0;
+                double cursor_y = 0.0;
+                glfwGetCursorPos(m_window, &cursor_x, &cursor_y);
+                m_title_bar_drag_cursor_x = m_title_bar_drag_window_x + cursor_x;
+                m_title_bar_drag_cursor_y = m_title_bar_drag_window_y + cursor_y;
+            }
+        }
+        if (m_dragging_title_bar) {
+            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                int window_x = 0;
+                int window_y = 0;
+                double cursor_x = 0.0;
+                double cursor_y = 0.0;
+                glfwGetWindowPos(m_window, &window_x, &window_y);
+                glfwGetCursorPos(m_window, &cursor_x, &cursor_y);
+                const double cursor_screen_x = window_x + cursor_x;
+                const double cursor_screen_y = window_y + cursor_y;
+                const int target_x = m_title_bar_drag_window_x +
+                    static_cast<int>(std::lround(cursor_screen_x -
+                                                 m_title_bar_drag_cursor_x));
+                const int target_y = m_title_bar_drag_window_y +
+                    static_cast<int>(std::lround(cursor_screen_y -
+                                                 m_title_bar_drag_cursor_y));
+                glfwSetWindowPos(m_window, target_x, target_y);
+            } else {
+                m_dragging_title_bar = false;
+            }
         }
         ImGui::EndMainMenuBar();
     }

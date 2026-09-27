@@ -11,6 +11,7 @@ class UISystem {
 private:
     bool m_initialized = false;
     bool m_open_settings_requested = false;
+    bool m_dragging_title_bar = false;
     GLFWwindow* m_window = nullptr;
     GLFWwindow* m_settings_window = nullptr;
     ImGuiContext* m_main_context = nullptr;
@@ -22,6 +23,11 @@ private:
     std::string m_selected_model;
     std::string m_selected_reasoning_effort;
     bool m_is_generating = false;
+    unsigned int m_menu_icon_texture = 0;
+    int m_title_bar_drag_window_x = 0;
+    int m_title_bar_drag_window_y = 0;
+    double m_title_bar_drag_cursor_x = 0.0;
+    double m_title_bar_drag_cursor_y = 0.0;
     TurnId m_active_turn_id = 0;
     TurnId m_next_turn_id = 1;
     ImFont* m_monospace_font = nullptr;

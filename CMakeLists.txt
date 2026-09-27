@@ -17,6 +17,9 @@ set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Build GLFW examples" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "Install GLFW" FORCE)
 
 add_subdirectory(third_party/glfw EXCLUDE_FROM_ALL)
+if(GLFW_BUILD_WAYLAND)
+    target_sources(glfw PRIVATE src/platform/glfw-wayland-window-drag.c)
+endif()
 
 find_package(OpenGL REQUIRED)
 
@@ -67,20 +70,32 @@ if(APPLE)
     add_custom_command(TARGET Zenith POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E make_directory
             "$<TARGET_BUNDLE_DIR:Zenith>/Contents/Resources/fonts"
+            "$<TARGET_BUNDLE_DIR:Zenith>/Contents/Resources/icons"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts"
             "$<TARGET_BUNDLE_DIR:Zenith>/Contents/Resources/fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons"
+            "$<TARGET_BUNDLE_DIR:Zenith>/Contents/Resources/icons"
     )
 else()
     add_custom_command(TARGET Zenith POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Zenith>/assets/fonts"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:Zenith>/assets/fonts"
+            "$<TARGET_FILE_DIR:Zenith>/assets/icons"
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts"
             "$<TARGET_FILE_DIR:Zenith>/assets/fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons"
+            "$<TARGET_FILE_DIR:Zenith>/assets/icons"
     )
 endif()
 target_include_directories(Zenith PRIVATE third_party/tinyfiledialogs third_party/sqlite3 third_party/json/include)
 target_link_libraries(Zenith PRIVATE imgui_md SQLite3)
+if(GLFW_BUILD_WAYLAND)
+    target_compile_definitions(Zenith PRIVATE ZENITH_HAS_WAYLAND_WINDOW_DRAG)
+endif()
 
 if(APPLE)
     target_compile_definitions(Zenith PRIVATE GL_SILENCE_DEPRECATION)
