@@ -1,16 +1,17 @@
 #include "provider_runtime.h"
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <cerrno>
+#include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <algorithm>
-#include <cwctype>
 #include <cwchar>
+#include <cwctype>
 #include <filesystem>
 #include <mutex>
 #include <string>
-#include <csignal>
 #include <system_error>
 #ifdef _WIN32
 #include <fcntl.h>
@@ -51,7 +52,7 @@ std::filesystem::path resolve_executable(const std::filesystem::path& executable
         return executable_path(executable);
 
     const std::filesystem::path extension = executable.extension();
-    const wchar_t* extensions[] = {nullptr, L".exe", L".cmd", L".bat"};
+    const wchar_t* extensions[] = {L".exe", L".cmd", L".bat", nullptr};
     const std::size_t extension_count = extension.empty() ? 4 : 1;
     for (std::size_t index = 0; index < extension_count; ++index) {
         std::wstring resolved(32768, L'\0');
@@ -261,7 +262,9 @@ Result start_codex_process(const CodexOptions* options, CodexProcess* process) {
     const std::filesystem::path executable = options->executable;
     std::wstring extension = executable.extension().wstring();
     std::transform(extension.begin(), extension.end(), extension.begin(),
-                   [](wchar_t character) { return static_cast<wchar_t>(std::towlower(character)); });
+                   [](wchar_t character) {
+                       return static_cast<wchar_t>(std::towlower(character));
+                   });
     const bool is_script = extension == L".cmd" || extension == L".bat";
     std::wstring application;
     std::wstring command_line;
@@ -340,7 +343,7 @@ Result start_codex_process(const CodexOptions* options, CodexProcess* process) {
     process->process = child.hProcess;
     process->pid = child.dwProcessId;
     const int input_fd = _open_osfhandle(
-        reinterpret_cast<intptr_t>(parent_input), _O_WRONLY | _O_TEXT);
+        reinterpret_cast<std::intptr_t>(parent_input), _O_WRONLY | _O_TEXT);
     if (input_fd < 0) {
         CloseHandle(parent_input);
         CloseHandle(parent_output);
@@ -353,7 +356,7 @@ Result start_codex_process(const CodexOptions* options, CodexProcess* process) {
         return result_error("Failed to connect to Codex app-server");
     }
     const int output_fd = _open_osfhandle(
-        reinterpret_cast<intptr_t>(parent_output), _O_RDONLY | _O_TEXT);
+        reinterpret_cast<std::intptr_t>(parent_output), _O_RDONLY | _O_TEXT);
     if (output_fd < 0) {
         CloseHandle(parent_output);
         return result_error("Failed to connect to Codex app-server");

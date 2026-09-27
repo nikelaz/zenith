@@ -3,15 +3,26 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstdio>
+#include <cstdint>
+#include <cwctype>
 #include <cstdlib>
 #include <csignal>
 #include <filesystem>
 #include <mutex>
 #include <string>
 #include <system_error>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 #include <utility>
 #include <vector>
 
@@ -35,6 +46,36 @@ std::filesystem::path resolve_executable(const std::filesystem::path& executable
     if (executable.empty())
         return {};
 
+#ifdef _WIN32
+    auto executable_path = [](const std::filesystem::path& path) {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error) || error)
+            return std::filesystem::path{};
+        const std::filesystem::path resolved = std::filesystem::canonical(path, error);
+        return error ? path : resolved;
+    };
+
+    if (executable.has_parent_path())
+        return executable_path(executable);
+
+    const std::filesystem::path extension = executable.extension();
+    const wchar_t* extensions[] = {L".exe", L".cmd", L".bat", nullptr};
+    const std::size_t extension_count = extension.empty() ? 4 : 1;
+    for (std::size_t index = 0; index < extension_count; ++index) {
+        std::wstring resolved(32768, L'\0');
+        const DWORD length = SearchPathW(nullptr, executable.c_str(), extensions[index],
+                                         static_cast<DWORD>(resolved.size()), resolved.data(),
+                                         nullptr);
+        if (length == 0 || length >= resolved.size())
+            continue;
+        resolved.resize(length);
+        const std::filesystem::path path(resolved);
+        const std::filesystem::path canonical = executable_path(path);
+        if (!canonical.empty())
+            return canonical;
+    }
+    return {};
+#else
     auto executable_path = [](const std::filesystem::path& path) {
         std::error_code error;
         if (!std::filesystem::is_regular_file(path, error) || error ||
@@ -68,10 +109,16 @@ std::filesystem::path resolve_executable(const std::filesystem::path& executable
         start = end + 1;
     }
     return {};
+#endif
 }
 
 struct CopilotProcess {
+#ifdef _WIN32
+    HANDLE process = nullptr;
+    DWORD pid = 0;
+#else
     pid_t pid = -1;
+#endif
     FILE* input = nullptr;
     FILE* output = nullptr;
 };
@@ -101,6 +148,123 @@ struct StreamContext {
 
 Result start_copilot_process(const GitHubCopilotOptions* options, const std::string& model,
                              const std::string& effort, CopilotProcess* process) {
+    if (model.find_first_of("\"\\%!&|<>^\r\n") != std::string::npos ||
+        effort.find_first_of("\"\\%!&|<>^\r\n") != std::string::npos)
+        return result_error("Invalid GitHub Copilot model or effort identifier");
+#ifdef _WIN32
+    SECURITY_ATTRIBUTES security_attributes{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HANDLE child_input = nullptr;
+    HANDLE parent_input = nullptr;
+    HANDLE parent_output = nullptr;
+    HANDLE child_output = nullptr;
+    HANDLE child_error = nullptr;
+    if (!CreatePipe(&child_input, &parent_input, &security_attributes, 0) ||
+        !CreatePipe(&parent_output, &child_output, &security_attributes, 0)) {
+        if (child_input != nullptr)
+            CloseHandle(child_input);
+        if (parent_input != nullptr)
+            CloseHandle(parent_input);
+        if (parent_output != nullptr)
+            CloseHandle(parent_output);
+        if (child_output != nullptr)
+            CloseHandle(child_output);
+        return result_error("Failed to create GitHub Copilot ACP server pipes");
+    }
+    if (!SetHandleInformation(parent_input, HANDLE_FLAG_INHERIT, 0) ||
+        !SetHandleInformation(parent_output, HANDLE_FLAG_INHERIT, 0)) {
+        CloseHandle(child_input);
+        CloseHandle(parent_input);
+        CloseHandle(parent_output);
+        CloseHandle(child_output);
+        return result_error("Failed to prepare GitHub Copilot ACP server pipes");
+    }
+
+    child_error = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              &security_attributes, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                              nullptr);
+    if (child_error == INVALID_HANDLE_VALUE) {
+        CloseHandle(child_input);
+        CloseHandle(parent_input);
+        CloseHandle(parent_output);
+        CloseHandle(child_output);
+        return result_error("Failed to prepare GitHub Copilot ACP server output");
+    }
+
+    const std::filesystem::path executable = options->executable;
+    std::wstring extension = executable.extension().wstring();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](wchar_t character) {
+                       return static_cast<wchar_t>(std::towlower(character));
+                   });
+    const bool is_script = extension == L".cmd" || extension == L".bat";
+    std::wstring arguments = L" --acp --stdio";
+    if (!model.empty())
+        arguments += L" \"--model=" + std::filesystem::path(model).wstring() + L"\"";
+    if (!effort.empty())
+        arguments += L" \"--effort=" + std::filesystem::path(effort).wstring() + L"\"";
+    std::wstring application;
+    std::wstring command_line;
+    if (is_script) {
+        application = L"cmd.exe";
+        command_line = L"cmd.exe /D /S /C \"\"" + executable.wstring() +
+                       L"\"" + arguments + L"\"";
+    } else {
+        application = executable.wstring();
+        command_line = L"\"" + application + L"\"" + arguments;
+    }
+    std::vector<wchar_t> writable_command_line(command_line.begin(), command_line.end());
+    writable_command_line.push_back(L'\0');
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = child_input;
+    startup.hStdOutput = child_output;
+    startup.hStdError = child_error;
+    PROCESS_INFORMATION child{};
+    const BOOL started = CreateProcessW(
+        application.c_str(), writable_command_line.data(), nullptr, nullptr, TRUE,
+        CREATE_NO_WINDOW, nullptr, nullptr,
+        &startup, &child);
+    CloseHandle(child_input);
+    CloseHandle(child_output);
+    CloseHandle(child_error);
+    if (!started) {
+        CloseHandle(parent_input);
+        CloseHandle(parent_output);
+        return result_error("Failed to start GitHub Copilot ACP server");
+    }
+
+    CloseHandle(child.hThread);
+    process->process = child.hProcess;
+    process->pid = child.dwProcessId;
+    const int input_fd = _open_osfhandle(
+        reinterpret_cast<std::intptr_t>(parent_input), _O_WRONLY | _O_TEXT);
+    if (input_fd < 0) {
+        CloseHandle(parent_input);
+        CloseHandle(parent_output);
+        return result_error("Failed to connect to GitHub Copilot ACP server");
+    }
+    process->input = _fdopen(input_fd, "w");
+    if (process->input == nullptr) {
+        _close(input_fd);
+        CloseHandle(parent_output);
+        return result_error("Failed to connect to GitHub Copilot ACP server");
+    }
+    const int output_fd = _open_osfhandle(
+        reinterpret_cast<std::intptr_t>(parent_output), _O_RDONLY | _O_TEXT);
+    if (output_fd < 0) {
+        CloseHandle(parent_output);
+        return result_error("Failed to connect to GitHub Copilot ACP server");
+    }
+    process->output = _fdopen(output_fd, "r");
+    if (process->output == nullptr) {
+        _close(output_fd);
+        return result_error("Failed to connect to GitHub Copilot ACP server");
+    }
+    setvbuf(process->input, nullptr, _IOLBF, 0);
+    return result_ok();
+#else
     std::vector<std::string> arguments = {options->executable.string(), "--acp", "--stdio"};
     if (!model.empty())
         arguments.push_back("--model=" + model);
@@ -157,11 +321,29 @@ Result start_copilot_process(const GitHubCopilotOptions* options, const std::str
     }
     setvbuf(process->input, nullptr, _IOLBF, 0);
     return result_ok();
+#endif
+}
+
+bool copilot_process_running(const CopilotProcess* process) {
+#ifdef _WIN32
+    return process->process != nullptr;
+#else
+    return process->pid > 0;
+#endif
+}
+
+void terminate_copilot_process(CopilotProcess* process) {
+#ifdef _WIN32
+    if (process->process != nullptr)
+        TerminateProcess(process->process, 1);
+#else
+    if (process->pid > 0)
+        kill(process->pid, SIGTERM);
+#endif
 }
 
 void stop_copilot_process(CopilotProcess* process) {
-    if (process->pid > 0)
-        kill(process->pid, SIGTERM);
+    terminate_copilot_process(process);
     if (process->input != nullptr) {
         fclose(process->input);
         process->input = nullptr;
@@ -170,12 +352,21 @@ void stop_copilot_process(CopilotProcess* process) {
         fclose(process->output);
         process->output = nullptr;
     }
+#ifdef _WIN32
+    if (process->process != nullptr) {
+        WaitForSingleObject(process->process, INFINITE);
+        CloseHandle(process->process);
+        process->process = nullptr;
+        process->pid = 0;
+    }
+#else
     if (process->pid > 0) {
         int status = 0;
         while (waitpid(process->pid, &status, 0) < 0 && errno == EINTR) {
         }
         process->pid = -1;
     }
+#endif
 }
 
 bool write_message(FILE* input, const Json& message) {
@@ -185,22 +376,29 @@ bool write_message(FILE* input, const Json& message) {
 }
 
 bool read_message(FILE* output, Json* message) {
-    char* line = nullptr;
-    std::size_t capacity = 0;
-    const ssize_t length = getline(&line, &capacity, output);
-    if (length < 0) {
-        free(line);
+    std::string line;
+    int character = 0;
+    while ((character = fgetc(output)) != EOF && character != '\n')
+        line.push_back(static_cast<char>(character));
+    if (character == EOF && line.empty())
         return false;
-    }
 
     try {
-        *message = Json::parse(line, line + length);
+        *message = Json::parse(line);
     } catch (...) {
-        free(line);
         return false;
     }
-    free(line);
     return true;
+}
+
+void ignore_sigpipe() {
+#ifndef _WIN32
+    static const bool ignored = [] {
+        std::signal(SIGPIPE, SIG_IGN);
+        return true;
+    }();
+    (void)ignored;
+#endif
 }
 
 std::string tool_content_text(const Json& content) {
@@ -439,11 +637,7 @@ std::vector<ModelOption> models_from_session(const Json& session, std::string* d
 bool discover_copilot_models(CopilotState* state, ProviderRuntime* runtime,
                              ProviderAvailability* availability,
                              std::vector<ModelOption>* models, std::string* default_model) {
-    static const bool ignore_sigpipe = [] {
-        std::signal(SIGPIPE, SIG_IGN);
-        return true;
-    }();
-    (void)ignore_sigpipe;
+    ignore_sigpipe();
 
     CopilotProcess process;
     StreamContext context{runtime, nullptr};
@@ -459,7 +653,7 @@ bool discover_copilot_models(CopilotState* state, ProviderRuntime* runtime,
         std::lock_guard lock(state->active_mutex);
         state->startup_process = &process;
         if (state->shutting_down)
-            kill(process.pid, SIGTERM);
+            terminate_copilot_process(&process);
     }
 
     bool success = initialize_copilot(&process, &context, &error);
@@ -520,11 +714,7 @@ std::string conversation_prompt(const TurnRequest* request) {
 
 Result run_github_copilot(CopilotState* state, const TurnRequest* request,
                           ProviderRuntime* runtime) {
-    static const bool ignore_sigpipe = [] {
-        std::signal(SIGPIPE, SIG_IGN);
-        return true;
-    }();
-    (void)ignore_sigpipe;
+    ignore_sigpipe();
 
     const std::string model = request->model.empty() ? state->options.default_model : request->model;
     CopilotProcess process;
@@ -538,7 +728,7 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
         std::lock_guard lock(state->active_mutex);
         state->active_process = &process;
         if (state->cancel_requested || state->shutting_down)
-            kill(process.pid, SIGTERM);
+            terminate_copilot_process(&process);
     }
 
     StreamContext context{runtime, request};
@@ -679,8 +869,8 @@ void cancel_github_copilot(Provider* provider, TurnId turn_id) {
     if (state->active_turn_id != turn_id)
         return;
     state->cancel_requested = true;
-    if (state->active_process != nullptr && state->active_process->pid > 0)
-        kill(state->active_process->pid, SIGTERM);
+    if (state->active_process != nullptr && copilot_process_running(state->active_process))
+        terminate_copilot_process(state->active_process);
 }
 
 std::vector<Event> poll_github_copilot(Provider* provider) {
@@ -704,10 +894,10 @@ void destroy_github_copilot(Provider* provider) {
     {
         std::lock_guard lock(state->active_mutex);
         state->shutting_down = true;
-        if (state->active_process != nullptr && state->active_process->pid > 0)
-            kill(state->active_process->pid, SIGTERM);
-        if (state->startup_process != nullptr && state->startup_process->pid > 0)
-            kill(state->startup_process->pid, SIGTERM);
+        if (state->active_process != nullptr && copilot_process_running(state->active_process))
+            terminate_copilot_process(state->active_process);
+        if (state->startup_process != nullptr && copilot_process_running(state->startup_process))
+            terminate_copilot_process(state->startup_process);
     }
     provider_runtime_shutdown(&state->runtime);
     delete state;
