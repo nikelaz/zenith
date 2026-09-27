@@ -81,6 +81,7 @@ void set_premiere_theme() {
     style.ChildBorderSize = 1.0f;
     style.PopupRounding = 6.0f;
     style.PopupBorderSize = 1.0f;
+    style.MenuItemRounding = 6.0f;
     style.FramePadding = ImVec2(10.0f, 6.0f);
     style.FrameRounding = 0.0f;
     style.FrameBorderSize = 0.0f;

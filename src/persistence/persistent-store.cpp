@@ -206,7 +206,27 @@ Result PersistentStore::load(ApplicationState& state) {
     const int project_count = sqlite3_column_int(count_statement.get(), 0);
     count_statement.reset();
 
-    const bool first_run = thread_count == 0 && project_count == 0;
+    Statement initialization_statement;
+    if (!prepare(m_database,
+                 "SELECT value FROM settings WHERE name = 'projects_initialized'",
+                 initialization_statement)) {
+        return fail("Failed to inspect project initialization state");
+    }
+    const int initialization_result = sqlite3_step(initialization_statement.get());
+    const bool projects_initialized = initialization_result == SQLITE_ROW &&
+        sqlite3_column_int(initialization_statement.get(), 0) != 0;
+    if (initialization_result != SQLITE_ROW && initialization_result != SQLITE_DONE)
+        return fail("Failed to inspect project initialization state");
+    initialization_statement.reset();
+
+    const bool first_run = thread_count == 0 && project_count == 0 && !projects_initialized;
+    if (thread_count == 0 && project_count == 0 && projects_initialized) {
+        state.projects.clear();
+        state.selected_project = 0;
+        state.selected_thread = 0;
+        return result_ok();
+    }
+
     if (project_count == 0) {
         const std::string directory = state.projects.empty() || state.projects.front().directory.empty()
             ? std::string(".")
@@ -434,6 +454,12 @@ Result PersistentStore::save(const ApplicationState& state) {
     if (sqlite3_step(selected_thread_statement.get()) != SQLITE_DONE) {
         return rollback(fail("Failed to save selected thread"));
     }
+    result = execute(
+        "INSERT INTO settings(name, value) VALUES('projects_initialized', 1) "
+        "ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+        "Failed to save project initialization state");
+    if (result.status == ResultStatus::Error)
+        return rollback(result);
 
     result = execute("COMMIT", "Failed to commit saved state");
     if (result.status == ResultStatus::Error) {

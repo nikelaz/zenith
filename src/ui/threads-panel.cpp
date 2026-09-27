@@ -14,6 +14,10 @@ struct PendingThreadDelete {
     std::size_t thread_index;
 };
 
+struct PendingProjectDelete {
+    std::size_t project_index;
+};
+
 std::string next_thread_id(const ApplicationState& state) {
     static std::uint64_t next_id = 1;
     for (;;) {
@@ -180,7 +184,9 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
 
 void render_threads_panel(ApplicationState& state) {
     static std::optional<PendingThreadDelete> pending_delete;
+    static std::optional<PendingProjectDelete> pending_project_delete;
     bool open_delete_confirmation = false;
+    bool open_project_delete_confirmation = false;
 
     ImGui::Begin("Threads");
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 4.0f));
@@ -212,11 +218,37 @@ void render_threads_panel(ApplicationState& state) {
             ImVec2(header_width, row_height), ImGuiButtonFlags_EnableNav);
         const bool header_hovered = ImGui::IsItemHovered();
         const bool header_active = ImGui::IsItemActive();
+        const ImVec2 header_min = ImGui::GetItemRectMin();
+        const ImVec2 header_max = ImGui::GetItemRectMax();
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
+        if (ImGui::BeginPopupContextItem("project_context", ImGuiPopupFlags_MouseButtonRight)) {
+            constexpr float menu_item_padding_x = 13.0f;
+            constexpr float menu_item_padding_y = 8.0f;
+            const ImVec2 label_size = ImGui::CalcTextSize("Delete project");
+            const ImVec2 menu_item_pos = ImGui::GetCursorScreenPos();
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_SelectableRounding, 6.0f);
+            const bool delete_project = ImGui::Selectable(
+                "##delete-project-item", false, 0,
+                ImVec2(label_size.x + menu_item_padding_x * 2.0f,
+                       label_size.y + menu_item_padding_y * 2.0f));
+            ImGui::GetWindowDrawList()->AddText(
+                ImVec2(menu_item_pos.x + menu_item_padding_x,
+                       menu_item_pos.y + menu_item_padding_y),
+                ImGui::GetColorU32(ImGuiCol_Text), "Delete project");
+            ImGui::PopStyleVar(2);
+            if (delete_project) {
+                pending_project_delete = PendingProjectDelete{project_index};
+                open_project_delete_confirmation = true;
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopStyleVar();
+
         if (header_clicked)
             project.expanded = !project.expanded;
 
-        const ImVec2 header_min = ImGui::GetItemRectMin();
-        const ImVec2 header_max = ImGui::GetItemRectMax();
         const ImVec4 header_color = header_active
             ? style.Colors[ImGuiCol_HeaderActive]
             : header_hovered
@@ -272,10 +304,56 @@ void render_threads_panel(ApplicationState& state) {
         ImGui::Spacing();
     }
 
+    if (open_project_delete_confirmation)
+        ImGui::OpenPopup("Confirm project deletion");
     if (open_delete_confirmation)
         ImGui::OpenPopup("Confirm thread deletion");
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+    if (ImGui::BeginPopupModal("Confirm project deletion", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        const bool valid_pending = pending_project_delete &&
+            pending_project_delete->project_index < state.projects.size();
+        if (valid_pending) {
+            const std::size_t project_index = pending_project_delete->project_index;
+            const ChatProject& project = state.projects[project_index];
+            ImGui::Text("Delete project \"%s\" and its saved threads?",
+                        project_name(project.directory).c_str());
+            ImGui::TextUnformatted("The project directory and its files will remain on disk.");
+            ImGui::Spacing();
+
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+            const bool delete_project = ImGui::Button("Delete", ImVec2(120.0f, 0.0f));
+            ImGui::PopStyleVar();
+            if (delete_project) {
+                state.projects.erase(state.projects.begin() +
+                                     static_cast<std::ptrdiff_t>(project_index));
+                if (state.projects.empty()) {
+                    state.selected_project = 0;
+                    state.selected_thread = 0;
+                } else if (state.selected_project == project_index) {
+                    state.selected_project = std::min(project_index, state.projects.size() - 1);
+                    state.selected_thread = 0;
+                } else if (state.selected_project > project_index) {
+                    --state.selected_project;
+                }
+                pending_project_delete.reset();
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+            const bool cancel_delete = ImGui::Button("Cancel", ImVec2(120.0f, 0.0f));
+            ImGui::PopStyleVar();
+            if (cancel_delete) {
+                pending_project_delete.reset();
+                ImGui::CloseCurrentPopup();
+            }
+        } else {
+            pending_project_delete.reset();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
     if (ImGui::BeginPopupModal("Confirm thread deletion", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         const bool valid_pending = pending_delete &&
