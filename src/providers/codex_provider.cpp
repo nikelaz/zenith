@@ -124,8 +124,16 @@ struct CodexState {
     CodexOptions options;
     std::mutex active_mutex;
     CodexProcess* active_process = nullptr;
+    CodexProcess* startup_process = nullptr;
     TurnId active_turn_id = 0;
     bool cancel_requested = false;
+    bool shutting_down = false;
+    std::mutex startup_mutex;
+    bool startup_complete = false;
+    bool startup_applied = false;
+    ProviderAvailability startup_availability = ProviderAvailability::Unknown;
+    std::filesystem::path startup_location;
+    std::vector<ModelOption> startup_models;
 };
 
 struct CodexProcess {
@@ -573,7 +581,7 @@ std::string conversation_prompt(const TurnRequest* request) {
     return prompt;
 }
 
-std::vector<ModelOption> fetch_codex_models(const CodexOptions* options,
+std::vector<ModelOption> fetch_codex_models(CodexState* state,
                                             ProviderRuntime* runtime,
                                             ProviderAvailability* availability) {
     ignore_sigpipe();
@@ -581,9 +589,15 @@ std::vector<ModelOption> fetch_codex_models(const CodexOptions* options,
     std::vector<ModelOption> models;
     *availability = ProviderAvailability::Unavailable;
     CodexProcess process;
-    if (start_codex_process(options, &process).status == ResultStatus::Error) {
+    if (start_codex_process(&state->options, &process).status == ResultStatus::Error) {
         force_stop_codex_process(&process);
         return models;
+    }
+    {
+        std::lock_guard lock(state->active_mutex);
+        state->startup_process = &process;
+        if (state->shutting_down)
+            terminate_codex_process(&process);
     }
 
     TurnRequest request;
@@ -650,8 +664,35 @@ std::vector<ModelOption> fetch_codex_models(const CodexOptions* options,
             break;
     }
 
+    {
+        std::lock_guard lock(state->active_mutex);
+        if (state->startup_process == &process)
+            state->startup_process = nullptr;
+    }
     stop_codex_process(&process);
     return models;
+}
+
+void initialize_codex(void* context, ProviderRuntime* runtime) {
+    CodexState* state = static_cast<CodexState*>(context);
+    ProviderAvailability availability = ProviderAvailability::Unavailable;
+    std::filesystem::path location;
+    std::vector<ModelOption> models;
+    if (state->options.execute == nullptr) {
+        location = resolve_executable(state->options.executable);
+        if (!location.empty()) {
+            state->options.executable = location;
+            models = fetch_codex_models(state, runtime, &availability);
+        }
+    } else {
+        availability = ProviderAvailability::Available;
+    }
+
+    std::lock_guard lock(state->startup_mutex);
+    state->startup_availability = availability;
+    state->startup_location = std::move(location);
+    state->startup_models = std::move(models);
+    state->startup_complete = true;
 }
 
 Result run_codex(CodexState* state, const TurnRequest* request,
@@ -669,7 +710,7 @@ Result run_codex(CodexState* state, const TurnRequest* request,
     {
         std::lock_guard lock(state->active_mutex);
         state->active_process = &process;
-        if (state->cancel_requested)
+        if (state->cancel_requested || state->shutting_down)
             terminate_codex_process(&process);
     }
 
@@ -782,16 +823,12 @@ void process_codex(void* context, const TurnRequest* request, ProviderRuntime* r
 Result start_codex(Provider* provider) {
     CodexState* state = static_cast<CodexState*>(provider->state);
     provider->default_model = state->options.default_model;
-    if (state->options.execute == nullptr) {
-        provider->location = resolve_executable(state->options.executable);
-        if (!provider->location.empty())
-            state->options.executable = provider->location;
-        provider->models = fetch_codex_models(&state->options, &state->runtime,
-                                              &provider->availability);
-    }
-    if (provider->models.empty())
-        provider->models.push_back({state->options.default_model,
-                                    state->options.default_model, {}, {}});
+    provider->models.push_back({state->options.default_model,
+                                state->options.default_model, {}, {}});
+    if (state->options.execute == nullptr)
+        provider_runtime_set_initialize(&state->runtime, initialize_codex);
+    else
+        provider->availability = ProviderAvailability::Available;
     return provider_runtime_start(&state->runtime);
 }
 
@@ -830,11 +867,29 @@ void cancel_codex(Provider* provider, TurnId turn_id) {
 
 std::vector<Event> poll_codex(Provider* provider) {
     CodexState* state = static_cast<CodexState*>(provider->state);
+    {
+        std::lock_guard lock(state->startup_mutex);
+        if (state->startup_complete && !state->startup_applied) {
+            provider->availability = state->startup_availability;
+            provider->location = std::move(state->startup_location);
+            if (!state->startup_models.empty())
+                provider->models = std::move(state->startup_models);
+            state->startup_applied = true;
+        }
+    }
     return provider_runtime_poll_events(&state->runtime);
 }
 
 void destroy_codex(Provider* provider) {
     CodexState* state = static_cast<CodexState*>(provider->state);
+    {
+        std::lock_guard lock(state->active_mutex);
+        state->shutting_down = true;
+        if (state->active_process != nullptr && codex_process_running(state->active_process))
+            terminate_codex_process(state->active_process);
+        if (state->startup_process != nullptr && codex_process_running(state->startup_process))
+            terminate_codex_process(state->startup_process);
+    }
     provider_runtime_shutdown(&state->runtime);
     delete state;
     delete provider;

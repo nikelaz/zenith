@@ -22,7 +22,7 @@ private:
     bool m_initialized = false;
     ApplicationState m_state;
     PersistentStore m_state_store;
-    ProviderPtr m_provider{nullptr, destroy_provider};
+    std::vector<ProviderPtr> m_providers;
 
     Result window_init();
     void window_deinit();

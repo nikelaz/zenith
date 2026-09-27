@@ -110,7 +110,15 @@ struct CodexOptions {
     void* execute_context = nullptr;
 };
 
+struct GitHubCopilotOptions {
+    std::filesystem::path executable = "copilot";
+    std::string default_model = "auto";
+    Result (*execute)(void*, const TurnRequest*, ProviderEventSink, void*) = nullptr;
+    void* execute_context = nullptr;
+};
+
 ProviderPtr make_fake_provider();
 ProviderPtr make_codex_provider(const CodexOptions* options = nullptr);
+ProviderPtr make_github_copilot_provider(const GitHubCopilotOptions* options = nullptr);
 
 #endif

@@ -2,6 +2,9 @@
 #include <utility>
 
 void run_provider(ProviderRuntime* runtime) {
+    if (runtime->initialize != nullptr)
+        runtime->initialize(runtime->process_context, runtime);
+
     for (;;) {
         TurnRequest request;
         {
@@ -23,8 +26,13 @@ void provider_runtime_init(ProviderRuntime* runtime, ProviderProcessFn process,
                            void* process_context) {
     runtime->process = process;
     runtime->process_context = process_context;
+    runtime->initialize = nullptr;
     runtime->stopping = false;
     runtime->next_turn_id = 1;
+}
+
+void provider_runtime_set_initialize(ProviderRuntime* runtime, ProviderInitializeFn initialize) {
+    runtime->initialize = initialize;
 }
 
 Result provider_runtime_start(ProviderRuntime* runtime) {

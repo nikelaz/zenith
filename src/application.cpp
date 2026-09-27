@@ -45,18 +45,21 @@ Result Application::init() {
         return state_result;
     }
 
-    m_provider = make_codex_provider();
-    Result provider_result = m_provider->start(m_provider.get());
-    if (provider_result.status == ResultStatus::Error) {
-
-        m_state_store.close();
-        window_deinit();
-        return provider_result;
+    m_providers.push_back(make_codex_provider());
+    m_providers.push_back(make_github_copilot_provider());
+    for (ProviderPtr& provider : m_providers) {
+        Result provider_result = provider->start(provider.get());
+        if (provider_result.status == ResultStatus::Error) {
+            m_providers.clear();
+            m_state_store.close();
+            window_deinit();
+            return provider_result;
+        }
     }
-    m_ui.emplace(m_window, m_state, *m_provider);
+    m_ui.emplace(m_window, m_state, m_providers);
 
     if (!m_ui) {
-        m_provider.reset();
+        m_providers.clear();
 
         window_deinit();
         return result_error("UI System does not have a value unexpectedly");
@@ -64,7 +67,7 @@ Result Application::init() {
 
     Result ui_init_result = m_ui->init();
     if (ui_init_result.status == ResultStatus::Error) {
-        m_provider.reset();
+        m_providers.clear();
         m_state_store.close();
         window_deinit();
         return ui_init_result;
@@ -87,7 +90,7 @@ void Application::deinit() {
             tinyfd_messageBox("Zenith", error_message.c_str(), "ok", "error", 1);
         }
     }
-    m_provider.reset();
+    m_providers.clear();
     m_state_store.close();
 
     window_deinit();

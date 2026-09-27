@@ -9,10 +9,12 @@
 
 struct ProviderRuntime;
 using ProviderProcessFn = void (*)(void*, const TurnRequest*, ProviderRuntime*);
+using ProviderInitializeFn = void (*)(void*, ProviderRuntime*);
 
 struct ProviderRuntime {
     ProviderProcessFn process;
     void* process_context;
+    ProviderInitializeFn initialize = nullptr;
     std::mutex request_mutex;
     std::condition_variable request_ready;
     std::queue<TurnRequest> requests;
@@ -25,6 +27,7 @@ struct ProviderRuntime {
 
 void provider_runtime_init(ProviderRuntime* runtime, ProviderProcessFn process,
                            void* process_context);
+void provider_runtime_set_initialize(ProviderRuntime* runtime, ProviderInitializeFn initialize);
 Result provider_runtime_start(ProviderRuntime* runtime);
 Result provider_runtime_submit(ProviderRuntime* runtime, TurnRequest request);
 std::vector<Event> provider_runtime_poll_events(ProviderRuntime* runtime);

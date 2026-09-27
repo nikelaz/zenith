@@ -58,6 +58,7 @@ add_executable(Zenith
     src/base/result.cpp
     src/providers/provider_runtime.cpp
     src/providers/codex_provider.cpp
+    src/providers/github_copilot_provider.cpp
     src/providers/fake_provider.cpp
     src/application.cpp
     src/persistence/persistent-store.cpp
@@ -115,7 +116,7 @@ endif()
 
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(tests tests/provider_tests.cpp src/base/result.cpp src/providers/provider_runtime.cpp src/providers/codex_provider.cpp src/providers/fake_provider.cpp)
+    add_executable(tests tests/provider_tests.cpp src/base/result.cpp src/providers/provider_runtime.cpp src/providers/codex_provider.cpp src/providers/github_copilot_provider.cpp src/providers/fake_provider.cpp)
     target_include_directories(tests PRIVATE third_party/json/include)
     target_link_libraries(tests PRIVATE GTest::gtest_main)
     target_compile_options(tests PRIVATE -Wall -Wextra -Wpedantic)

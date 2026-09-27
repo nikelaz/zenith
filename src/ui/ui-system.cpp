@@ -298,9 +298,18 @@ void settings_focus_callback(GLFWwindow* window, int focused) {
 }
 }
 
-UISystem::UISystem(GLFWwindow* window, ApplicationState& state, Provider& provider)
-    : m_window(window), m_state(state), m_provider(provider),
-      m_selected_model(provider.default_model) {}
+UISystem::UISystem(GLFWwindow* window, ApplicationState& state,
+                   std::vector<ProviderPtr>& providers)
+    : m_window(window), m_state(state), m_providers(providers),
+      m_selected_model(providers.empty() ? std::string{} : providers.front()->default_model) {
+    for (std::size_t index = 0; index < providers.size(); ++index) {
+        if (providers[index]->name == "GitHub Copilot") {
+            m_selected_provider = index;
+            m_selected_model = providers[index]->default_model;
+            break;
+        }
+    }
+}
 
 Result UISystem::init() {
     IMGUI_CHECKVERSION();
@@ -380,7 +389,8 @@ void UISystem::render_frame_to_backbuffer() {
 
     new_frame();
 
-    for (const Event& event : m_provider.poll_events(&m_provider)) {
+    for (ProviderPtr& provider : m_providers) {
+      for (const Event& event : provider->poll_events(provider.get())) {
         try {
             ChatThread* thread = nullptr;
             for (ChatProject& project : m_state.projects) {
@@ -470,6 +480,7 @@ void UISystem::render_frame_to_backbuffer() {
             }
         } catch (...) {
         }
+      }
     }
     if (ImGui::BeginMainMenuBar()) {
         const ImVec2 menu_row_pos = ImGui::GetCursorScreenPos();
@@ -589,7 +600,7 @@ void UISystem::render_frame_to_backbuffer() {
     }
     render_dock_area();
     render_threads_panel(m_state);
-    render_chat_panel(m_state, m_message_input, m_provider, m_selected_model,
+    render_chat_panel(m_state, m_message_input, m_providers, m_selected_provider, m_selected_model,
                       m_selected_reasoning_effort, m_is_generating, m_active_turn_id,
                       m_next_turn_id, m_monospace_font);
 
@@ -733,30 +744,52 @@ void UISystem::render_settings_contents() {
     ImGui::EndChild();
     ImGui::SameLine();
 
-    const char* availability = "Unknown";
-    ImVec4 availability_color = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
-    if (m_provider.availability == ProviderAvailability::Available) {
-        availability = "Available";
-        availability_color = ImVec4(0.42f, 0.78f, 0.50f, 1.0f);
-    } else if (m_provider.availability == ProviderAvailability::Unavailable) {
-        availability = "Unavailable";
-        availability_color = ImVec4(0.90f, 0.38f, 0.34f, 1.0f);
-    }
+    ImGui::BeginChild("##settings_content", ImVec2(0.0f, 0.0f));
+    for (std::size_t index = 0; index < m_providers.size(); ++index) {
+        Provider& provider = *m_providers[index];
+        const char* availability = "Checking...";
+        ImVec4 availability_color = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
+        if (provider.availability == ProviderAvailability::Available) {
+            availability = "Available";
+            availability_color = ImVec4(0.42f, 0.78f, 0.50f, 1.0f);
+        } else if (provider.availability == ProviderAvailability::Unavailable) {
+            availability = "Unavailable";
+            availability_color = ImVec4(0.90f, 0.38f, 0.34f, 1.0f);
+        }
 
-    if (begin_ui_card("##codex_provider")) {
-        ImGui::TextUnformatted("Codex");
+        ImGui::PushID(static_cast<int>(index));
+        if (begin_ui_card("##provider")) {
+            ImGui::TextUnformatted(provider.name.data(),
+                                   provider.name.data() + provider.name.size());
+            ImGui::Spacing();
+            if (ImGui::BeginTable("##details", 2, ImGuiTableFlags_SizingStretchProp)) {
+                ImGui::TableSetupColumn("Label", ImGuiTableColumnFlags_WidthFixed,
+                                        ImGui::CalcTextSize("Location").x);
+                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch);
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextDisabled("Status");
+                ImGui::TableNextColumn();
+                ImGui::TextColored(availability_color, "%s", availability);
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextDisabled("Location");
+                ImGui::TableNextColumn();
+                if (!provider.location.empty())
+                    ImGui::TextWrapped("%s", provider.location.string().c_str());
+                else if (provider.availability == ProviderAvailability::Unknown)
+                    ImGui::TextUnformatted("Discovery in progress...");
+                else
+                    ImGui::TextUnformatted("Executable not found");
+                ImGui::EndTable();
+            }
+
+        }
+        end_ui_card();
+        ImGui::PopID();
         ImGui::Spacing();
-        ImGui::TextDisabled("Status");
-        ImGui::SameLine(112.0f);
-        ImGui::TextColored(availability_color, "%s", availability);
-        ImGui::TextDisabled("Location");
-        ImGui::SameLine(112.0f);
-        if (m_provider.location.empty())
-            ImGui::TextWrapped("Codex executable not found");
-        else
-            ImGui::TextWrapped("%s", m_provider.location.string().c_str());
     }
-    end_ui_card();
+    ImGui::EndChild();
 
     ImGui::End();
 }

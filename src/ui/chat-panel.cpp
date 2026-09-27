@@ -278,7 +278,8 @@ protected:
     }
 
     void TEXT_RENDERED(const char* begin, const char* end) override {
-        register_text(begin, end, ImGui::GetItemRectMin());
+        if (m_href.empty())
+            register_text(begin, end, ImGui::GetItemRectMin());
     }
 
 private:
@@ -637,9 +638,9 @@ void render_expandable_card(const char* expanded_id_name, const std::string& tit
     const float details_width = natural_details_size.x + details_horizontal_padding * 2.0f;
     const float card_width = std::min(available_width,
                                      std::max(header_width, expanded ? details_width : 0.0f));
-    ImGui::InvisibleButton("##tool-card", ImVec2(card_width, row_height));
+    const bool clicked = ImGui::InvisibleButton("##tool-card", ImVec2(card_width, row_height));
     const bool hovered = ImGui::IsItemHovered();
-    if (hovered && ImGui::IsMouseReleased(0) &&
+    if (clicked &&
         ImGui::GetIO().MouseDragMaxDistanceSqr[0] <= 9.0f) {
         expanded = !expanded;
         storage->SetBool(expanded_id, expanded);
@@ -691,16 +692,12 @@ void render_expandable_card(const char* expanded_id_name, const std::string& tit
     ImGui::SetCursorScreenPos(ImVec2(title_x, text_y));
     ImGui::PushStyleColor(ImGuiCol_Text, text_color);
     ImGui::TextUnformatted(clipped_title.c_str());
-    register_text(clipped_title.c_str(), clipped_title.c_str() + clipped_title.size(),
-                  ImGui::GetItemRectMin(), header_font, font_size);
     ImGui::PopStyleColor();
     if (has_status) {
         ImGui::SetCursorScreenPos(
             ImVec2(std::max(status_x, title_x + title_size.x + status_gap), text_y));
         ImGui::PushStyleColor(ImGuiCol_Text, status_color);
         ImGui::TextUnformatted(status.c_str());
-        register_text(status.c_str(), status.c_str() + status.size(),
-                      ImGui::GetItemRectMin(), header_font, font_size);
         ImGui::PopStyleColor();
     }
     ImGui::PopFont();
@@ -799,24 +796,37 @@ void render_user_message(const ChatMessage& message) {
 
 }
 
-void render_chat_panel(ApplicationState& state, std::string& message_input, Provider& provider,
+void render_chat_panel(ApplicationState& state, std::string& message_input,
+                       std::vector<ProviderPtr>& providers, std::size_t& selected_provider,
                        std::string& selected_model, std::string& selected_reasoning_effort,
                        bool& is_generating, TurnId& active_turn_id, TurnId& next_turn_id,
                        ImFont* monospace_font) {
+    Provider* provider = providers[selected_provider].get();
+    if (!is_generating && provider->availability != ProviderAvailability::Available) {
+        for (std::size_t index = 0; index < providers.size(); ++index) {
+            if (providers[index]->availability == ProviderAvailability::Available) {
+                selected_provider = index;
+                provider = providers[index].get();
+                selected_model = provider->default_model;
+                selected_reasoning_effort.clear();
+                break;
+            }
+        }
+    }
     static ChatMarkdown markdown;
     markdown.monospace_font = monospace_font;
-    if (!provider.models.empty()) {
-        const auto selected = std::find_if(provider.models.begin(), provider.models.end(),
+    if (!provider->models.empty()) {
+        const auto selected = std::find_if(provider->models.begin(), provider->models.end(),
             [&](const ModelOption& model) { return model.id == selected_model; });
-        if (selected == provider.models.end()) {
-            const auto preferred = std::find_if(provider.models.begin(), provider.models.end(),
-                [&](const ModelOption& model) { return model.id == provider.default_model; });
-            selected_model = (preferred == provider.models.end() ? provider.models.front() : *preferred).id;
+        if (selected == provider->models.end()) {
+            const auto preferred = std::find_if(provider->models.begin(), provider->models.end(),
+                [&](const ModelOption& model) { return model.id == provider->default_model; });
+            selected_model = (preferred == provider->models.end() ? provider->models.front() : *preferred).id;
             selected_reasoning_effort.clear();
         }
-        const auto active = std::find_if(provider.models.begin(), provider.models.end(),
+        const auto active = std::find_if(provider->models.begin(), provider->models.end(),
             [&](const ModelOption& model) { return model.id == selected_model; });
-        if (active != provider.models.end()) {
+        if (active != provider->models.end()) {
             const bool effort_supported = std::any_of(active->reasoning_efforts.begin(),
                 active->reasoning_efforts.end(), [&](const ReasoningOption& option) {
                     return option.value == selected_reasoning_effort;
@@ -896,10 +906,10 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
         const bool mouse_over_messages = io.MousePos.x >= messages_min.x &&
             io.MousePos.x < messages_max.x && io.MousePos.y >= messages_min.y &&
             io.MousePos.y < messages_max.y;
-        if (mouse_over_messages && is_over_selectable_text(io.MousePos))
+        const bool mouse_over_text = mouse_over_messages && is_over_selectable_text(io.MousePos);
+        if (mouse_over_text)
             ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
-        if (io.MouseClicked[0] && mouse_over_messages &&
-            !transcript_selection.spans.empty()) {
+        if (io.MouseClicked[0] && mouse_over_text) {
             transcript_selection.anchor = text_endpoint_at(io.MousePos);
             transcript_selection.focus = transcript_selection.anchor;
             transcript_selection.tracking = true;
@@ -981,26 +991,42 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
         const float selector_available = std::max(0.0f, send_pos.x - selector_x - 12.0f);
         const float model_width = std::min(190.0f, selector_available * 0.62f);
         const float reasoning_width = std::min(140.0f, std::max(0.0f, selector_available - model_width - 8.0f));
-        const auto active_model = std::find_if(provider.models.begin(), provider.models.end(),
+        const auto active_model = std::find_if(provider->models.begin(), provider->models.end(),
             [&](const ModelOption& model) { return model.id == selected_model; });
-        if (active_model != provider.models.end() && model_width >= 60.0f) {
+        if (active_model != provider->models.end() && model_width >= 60.0f) {
             ImGui::SetCursorScreenPos(ImVec2(selector_x, selector_y));
             ImGui::SetNextItemWidth(model_width);
+            ImGui::BeginDisabled(is_generating);
             if (ImGui::BeginCombo("##model-selector", active_model->name.c_str())) {
-                for (const ModelOption& model : provider.models) {
-                    const bool is_selected = model.id == selected_model;
-                    if (ImGui::Selectable(model.name.c_str(), is_selected)) {
-                        if (!is_selected) {
-                            selected_model = model.id;
-                            selected_reasoning_effort = model.default_reasoning_effort;
+                for (std::size_t index = 0; index < providers.size(); ++index) {
+                    Provider& candidate = *providers[index];
+                    ImGui::PushID(static_cast<int>(index));
+                    ImGui::SeparatorText(candidate.name.data());
+                    if (candidate.availability == ProviderAvailability::Available) {
+                        for (const ModelOption& model : candidate.models) {
+                            ImGui::PushID(model.id.c_str());
+                            const bool is_selected = index == selected_provider &&
+                                                     model.id == selected_model;
+                            if (ImGui::Selectable(model.name.c_str(), is_selected)) {
+                                selected_provider = index;
+                                provider = &candidate;
+                                selected_model = model.id;
+                                selected_reasoning_effort = model.default_reasoning_effort;
+                            }
+                            if (is_selected)
+                                ImGui::SetItemDefaultFocus();
+                            ImGui::PopID();
                         }
+                    } else {
+                        ImGui::TextDisabled(candidate.availability == ProviderAvailability::Unknown
+                                                ? "Discovering models..." : "Unavailable");
                     }
-                    if (is_selected)
-                        ImGui::SetItemDefaultFocus();
+                    ImGui::PopID();
                 }
                 ImGui::EndCombo();
             }
-            const auto reasoning_model = std::find_if(provider.models.begin(), provider.models.end(),
+            ImGui::EndDisabled();
+            const auto reasoning_model = std::find_if(provider->models.begin(), provider->models.end(),
                 [&](const ModelOption& model) { return model.id == selected_model; });
             if (reasoning_width >= 60.0f) {
                 const std::string effort_label = selected_reasoning_effort.empty()
@@ -1008,7 +1034,7 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
                 ImGui::SetCursorScreenPos(ImVec2(selector_x + model_width + 8.0f, selector_y));
                 ImGui::SetNextItemWidth(reasoning_width);
                 if (ImGui::BeginCombo("##reasoning-selector", effort_label.c_str())) {
-                    if (reasoning_model == provider.models.end() || reasoning_model->reasoning_efforts.empty()) {
+                    if (reasoning_model == provider->models.end() || reasoning_model->reasoning_efforts.empty()) {
                         ImGui::BeginDisabled();
                         ImGui::Selectable("Default", true);
                         ImGui::EndDisabled();
@@ -1055,10 +1081,11 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
         ImGui::SetCursorScreenPos(input_pos);
         ImGui::Dummy(ImVec2(full_width, total_height));
         if (send_clicked && is_generating) {
-            provider.cancel(&provider, active_turn_id);
+            provider->cancel(provider, active_turn_id);
             is_generating = false;
             active_turn_id = 0;
-        } else if (!is_generating && (enter || send_clicked) && !message_input.empty()) {
+        } else if (!is_generating && provider->availability == ProviderAvailability::Available &&
+                   (enter || send_clicked) && !message_input.empty()) {
             if (state.selected_thread > 0) {
                 std::rotate(threads.begin(),
                             threads.begin() + state.selected_thread,
@@ -1077,7 +1104,7 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
             request.model = selected_model;
             request.reasoning_effort = selected_reasoning_effort;
             request.turn_id = next_turn_id++;
-            const Result submitted = provider.submit(&provider, std::move(request));
+            const Result submitted = provider->submit(provider, std::move(request));
             if (submitted.status == ResultStatus::Error) {
                 destination.messages.push_back(
                     {ChatMessageRole::Assistant, std::string(submitted.error), {}, {}, {}});
