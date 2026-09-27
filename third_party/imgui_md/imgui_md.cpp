@@ -150,6 +150,11 @@ void imgui_md::BLOCK_CODE(const MD_BLOCK_CODE_DETAIL*, bool e)
 	m_is_code = e;
 }
 
+void imgui_md::CODE_TEXT(const char* str, const char* str_end)
+{
+	render_text(str, str_end);
+}
+
 void imgui_md::BLOCK_HTML(bool)
 {
 
@@ -566,7 +571,10 @@ int imgui_md::text(MD_TEXTTYPE type, const char* str, const char* str_end)
 		render_text(str, str_end);
 		break;
 	case MD_TEXT_CODE:
-		render_text(str, str_end);
+		if (m_is_code)
+			CODE_TEXT(str, str_end);
+		else
+			render_text(str, str_end);
 		break;
 	case MD_TEXT_NULLCHAR:
 		break;

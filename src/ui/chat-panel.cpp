@@ -5,15 +5,77 @@
 #include <algorithm>
 #include <cfloat>
 #include <cctype>
+#include <initializer_list>
+#include <string_view>
 #include <utility>
 
 namespace {
+void render_code_card(const std::string& code, const std::string& language,
+                      ImFont* monospace_font);
+
+std::string display_language(const std::string& language) {
+    std::string normalized = language;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+    static const std::pair<const char*, const char*> labels[] = {
+        {"bash", "Bash"}, {"c", "C"}, {"cpp", "C++"}, {"c++", "C++"},
+        {"csharp", "C#"}, {"cs", "C#"}, {"css", "CSS"}, {"dart", "Dart"},
+        {"diff", "Diff"}, {"dockerfile", "Dockerfile"}, {"go", "Go"},
+        {"golang", "Go"}, {"html", "HTML"}, {"java", "Java"},
+        {"javascript", "JavaScript"}, {"js", "JavaScript"}, {"json", "JSON"},
+        {"jsx", "JSX"}, {"kotlin", "Kotlin"}, {"kt", "Kotlin"},
+        {"lua", "Lua"}, {"md", "Markdown"}, {"markdown", "Markdown"},
+        {"objective-c", "Objective-C"}, {"objc", "Objective-C"},
+        {"perl", "Perl"}, {"php", "PHP"}, {"plaintext", "Plain text"},
+        {"powershell", "PowerShell"}, {"py", "Python"}, {"python", "Python"},
+        {"r", "R"}, {"rb", "Ruby"}, {"ruby", "Ruby"}, {"rs", "Rust"},
+        {"rust", "Rust"}, {"sass", "Sass"}, {"scss", "SCSS"},
+        {"shell", "Shell"}, {"sh", "Shell"}, {"sql", "SQL"}, {"swift", "Swift"},
+        {"ts", "TypeScript"}, {"typescript", "TypeScript"}, {"tsx", "TSX"},
+        {"toml", "TOML"}, {"txt", "Plain text"}, {"xml", "XML"},
+        {"yaml", "YAML"}, {"yml", "YAML"}, {"zig", "Zig"},
+    };
+    for (const auto& label : labels) {
+        if (normalized == label.first)
+            return label.second;
+    }
+    if (!language.empty()) {
+        normalized[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(normalized[0])));
+        return normalized;
+    }
+    return {};
+}
+
 class ChatMarkdown : public imgui_md {
 public:
+    ImFont* monospace_font = nullptr;
+
     ImVec4 get_color() const override {
         return m_href.empty() ? ImGui::GetStyle().Colors[ImGuiCol_Text]
                               : ImVec4(0.82f, 0.84f, 0.90f, 1.0f);
     }
+
+protected:
+    void BLOCK_CODE(const MD_BLOCK_CODE_DETAIL* detail, bool entering) override {
+        imgui_md::BLOCK_CODE(detail, entering);
+        if (entering) {
+            code.clear();
+            language = detail->lang.size > 0
+                ? std::string(detail->lang.text, detail->lang.size) : std::string();
+        } else {
+            if (!code.empty() && code.back() == '\n')
+                code.pop_back();
+            render_code_card(code, language, monospace_font);
+        }
+    }
+
+    void CODE_TEXT(const char* begin, const char* end) override {
+        code.append(begin, end);
+    }
+
+private:
+    std::string code;
+    std::string language;
 };
 
 enum class ActivityIcon {
@@ -119,6 +181,146 @@ std::string elide_tool_title(const std::string& title, float max_width, ImFont* 
             --end;
     }
     return "...";
+}
+
+void render_code_card(const std::string& code, const std::string& language,
+                      ImFont* monospace_font) {
+    constexpr float padding = 14.0f;
+    constexpr float header_padding = 4.0f;
+    const float font_size = ImGui::GetFontSize();
+    const float header_height = font_size + header_padding * 2.0f;
+    const float line_height = ImGui::GetTextLineHeight();
+    const float width = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const std::size_t line_count = 1 + std::count(code.begin(), code.end(), '\n');
+    const float body_height = std::min(400.0f, line_count * line_height + padding * 2.0f);
+    const ImVec2 start = ImGui::GetCursorScreenPos();
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    draw_list->AddRectFilled(start, ImVec2(start.x + width, start.y + header_height + body_height),
+                             ImGui::GetColorU32(ImVec4(0.105f, 0.105f, 0.105f, 1.0f)), 5.0f);
+    draw_list->AddRectFilled(ImVec2(start.x, start.y + header_height - 1.0f),
+                             ImVec2(start.x + width, start.y + header_height + body_height),
+                             ImGui::GetColorU32(ImVec4(0.065f, 0.065f, 0.065f, 1.0f)), 5.0f,
+                             ImDrawFlags_RoundCornersBottom);
+    const ImU32 icon_color = ImGui::GetColorU32(ImVec4(0.47f, 0.47f, 0.47f, 1.0f));
+    const ImVec2 icon(start.x + padding, start.y + header_padding + 2.0f);
+    constexpr float icon_scale = 0.020f;
+    const auto fill_polygon = [&](std::initializer_list<ImVec2> points) {
+        ImVec2 scaled[6];
+        int count = 0;
+        for (const ImVec2& point : points)
+            scaled[count++] = ImVec2(icon.x + point.x * icon_scale,
+                                     icon.y + point.y * icon_scale);
+        draw_list->AddConvexPolyFilled(scaled, count, icon_color);
+    };
+    fill_polygon({{137.4f, 201.3f}, {182.6f, 246.6f}, {109.3f, 320.0f},
+                  {41.4f, 297.3f}});
+    fill_polygon({{28.9f, 309.8f}, {41.4f, 297.3f}, {109.3f, 320.0f},
+                  {41.4f, 342.6f}, {28.9f, 330.1f}});
+    fill_polygon({{41.4f, 342.6f}, {109.3f, 320.0f}, {182.7f, 393.3f},
+                  {137.4f, 438.6f}});
+    fill_polygon({{353.2f, 87.2f}, {414.8f, 104.8f}, {286.8f, 552.8f},
+                  {225.2f, 535.2f}});
+    fill_polygon({{502.7f, 201.4f}, {598.7f, 297.4f}, {530.8f, 320.0f},
+                  {457.4f, 246.6f}});
+    fill_polygon({{598.7f, 297.4f}, {611.2f, 309.9f}, {611.2f, 330.1f},
+                  {598.7f, 342.7f}, {530.8f, 320.0f}});
+    fill_polygon({{530.8f, 320.0f}, {598.7f, 342.7f}, {502.7f, 438.7f},
+                  {457.4f, 393.4f}});
+    draw_list->AddText(ImVec2(start.x + padding + 23.0f, start.y + header_padding),
+                       ImGui::GetColorU32(ImVec4(0.82f, 0.82f, 0.82f, 1.0f)), "Code");
+    const std::string language_label = display_language(language);
+    if (!language_label.empty()) {
+        const float label_width = ImGui::CalcTextSize("Code").x;
+        draw_list->AddText(ImVec2(start.x + padding + 32.0f + label_width,
+                                  start.y + header_padding),
+                           ImGui::GetColorU32(ImVec4(0.57f, 0.69f, 0.91f, 1.0f)),
+                           language_label.c_str());
+    }
+
+    ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + header_height));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(padding, padding));
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+    ImGui::BeginChild("##code-body", ImVec2(width, body_height),
+                      ImGuiChildFlags_AlwaysUseWindowPadding, ImGuiWindowFlags_NoBackground);
+    ImDrawList* code_draw_list = ImGui::GetWindowDrawList();
+    ImFont* font = monospace_font != nullptr ? monospace_font : ImGui::GetFont();
+    ImGui::PushFont(font, font_size);
+    const ImU32 ordinary = ImGui::GetColorU32(ImVec4(0.82f, 0.82f, 0.82f, 1.0f));
+    const ImU32 keyword = ImGui::GetColorU32(ImVec4(0.66f, 0.56f, 0.91f, 1.0f));
+    const ImU32 literal = ImGui::GetColorU32(ImVec4(0.81f, 0.68f, 0.47f, 1.0f));
+    const ImU32 comment = ImGui::GetColorU32(ImVec4(0.52f, 0.61f, 0.52f, 1.0f));
+    constexpr std::string_view keywords =
+        " auto bool break case char class const continue default do double else enum false "
+        " float for if import include int let long namespace nullptr private public return "
+        " short signed sizeof static struct switch template this true typedef unsigned using "
+        " void while fn function def async await var new try catch throw interface type ";
+    float widest_line = 0.0f;
+    bool in_block_comment = false;
+    std::size_t line_start = 0;
+    std::size_t line_number = 0;
+    const ImVec2 text_start = ImGui::GetCursorScreenPos();
+    while (line_start <= code.size()) {
+        const std::size_t line_end = code.find('\n', line_start);
+        const std::size_t end = line_end == std::string::npos ? code.size() : line_end;
+        float x = text_start.x;
+        const float y = text_start.y + line_number * line_height;
+        std::size_t pos = line_start;
+        while (pos < end) {
+            const std::size_t token_start = pos;
+            ImU32 color = ordinary;
+            if (in_block_comment) {
+                const std::size_t close = code.find("*/", pos);
+                pos = close == std::string::npos || close >= end ? end : close + 2;
+                in_block_comment = pos == end && (close == std::string::npos || close >= end);
+                color = comment;
+            } else if (code.compare(pos, 2, "//") == 0 || code[pos] == '#') {
+                pos = end;
+                color = comment;
+            } else if (code.compare(pos, 2, "/*") == 0) {
+                const std::size_t close = code.find("*/", pos + 2);
+                pos = close == std::string::npos || close >= end ? end : close + 2;
+                in_block_comment = pos == end && (close == std::string::npos || close >= end);
+                color = comment;
+            } else if (code[pos] == '"' || code[pos] == '\'') {
+                const char quote = code[pos++];
+                while (pos < end) {
+                    if (code[pos++] == '\\' && pos < end)
+                        ++pos;
+                    else if (code[pos - 1] == quote)
+                        break;
+                }
+                color = literal;
+            } else if (std::isdigit(static_cast<unsigned char>(code[pos]))) {
+                while (pos < end && (std::isalnum(static_cast<unsigned char>(code[pos])) ||
+                                     code[pos] == '.'))
+                    ++pos;
+                color = literal;
+            } else if (std::isalpha(static_cast<unsigned char>(code[pos])) || code[pos] == '_') {
+                while (pos < end && (std::isalnum(static_cast<unsigned char>(code[pos])) ||
+                                     code[pos] == '_'))
+                    ++pos;
+                const std::string word = " " + code.substr(token_start, pos - token_start) + " ";
+                if (keywords.find(word) != std::string_view::npos)
+                    color = keyword;
+            } else {
+                ++pos;
+            }
+            const char* begin = code.c_str() + token_start;
+            const char* finish = code.c_str() + pos;
+            code_draw_list->AddText(font, font_size, ImVec2(x, y), color, begin, finish);
+            x += font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, begin, finish).x;
+        }
+        widest_line = std::max(widest_line, x - text_start.x);
+        if (line_end == std::string::npos)
+            break;
+        line_start = line_end + 1;
+        ++line_number;
+    }
+    ImGui::Dummy(ImVec2(widest_line, line_count * line_height));
+    ImGui::PopFont();
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
 }
 
 void render_expandable_card(const char* expanded_id_name, const std::string& title,
@@ -313,6 +515,7 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
                        bool& is_generating, TurnId& active_turn_id, TurnId& next_turn_id,
                        ImFont* monospace_font) {
     static ChatMarkdown markdown;
+    markdown.monospace_font = monospace_font;
     if (!provider.models.empty()) {
         const auto selected = std::find_if(provider.models.begin(), provider.models.end(),
             [&](const ModelOption& model) { return model.id == selected_model; });

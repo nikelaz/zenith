@@ -56,6 +56,7 @@ protected:
 	virtual void BLOCK_HR(bool e);
 	virtual void BLOCK_H(const MD_BLOCK_H_DETAIL* d, bool e);
 	virtual void BLOCK_CODE(const MD_BLOCK_CODE_DETAIL*, bool);
+	virtual void CODE_TEXT(const char* str, const char* str_end);
 	virtual void BLOCK_HTML(bool);
 	virtual void BLOCK_P(bool);
 	virtual void BLOCK_TABLE(const MD_BLOCK_TABLE_DETAIL*, bool);
