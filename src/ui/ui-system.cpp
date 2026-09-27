@@ -7,6 +7,7 @@
 #include "threads-panel.h"
 #include <GLFW/glfw3.h>
 #include <algorithm>
+#include <cfloat>
 #include <cstdlib>
 #include <filesystem>
 #include <iterator>
@@ -152,6 +153,58 @@ void set_premiere_theme() {
     colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.55f);
     colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.0f, 0.0f, 0.0f, 0.65f);
 }
+
+template <typename EventFn>
+void add_settings_input(GLFWwindow* window, EventFn&& add_event) {
+    ImGuiContext* context = static_cast<ImGuiContext*>(glfwGetWindowUserPointer(window));
+    if (context == nullptr)
+        return;
+
+    ImGuiContext* previous_context = ImGui::GetCurrentContext();
+    ImGui::SetCurrentContext(context);
+    add_event(ImGui::GetIO());
+    ImGui::SetCurrentContext(previous_context);
+}
+
+void settings_cursor_position_callback(GLFWwindow* window, double x, double y) {
+    add_settings_input(window, [x, y](ImGuiIO& io) {
+        io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
+    });
+}
+
+void settings_cursor_enter_callback(GLFWwindow* window, int entered) {
+    if (entered == GLFW_TRUE) {
+        double x;
+        double y;
+        glfwGetCursorPos(window, &x, &y);
+        settings_cursor_position_callback(window, x, y);
+    } else {
+        add_settings_input(window, [](ImGuiIO& io) {
+            io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+        });
+    }
+}
+
+void settings_mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
+    (void)mods;
+    if (button < 0 || button >= ImGuiMouseButton_COUNT)
+        return;
+    add_settings_input(window, [button, action](ImGuiIO& io) {
+        io.AddMouseButtonEvent(button, action == GLFW_PRESS);
+    });
+}
+
+void settings_scroll_callback(GLFWwindow* window, double x_offset, double y_offset) {
+    add_settings_input(window, [x_offset, y_offset](ImGuiIO& io) {
+        io.AddMouseWheelEvent(static_cast<float>(x_offset), static_cast<float>(y_offset));
+    });
+}
+
+void settings_focus_callback(GLFWwindow* window, int focused) {
+    add_settings_input(window, [focused](ImGuiIO& io) {
+        io.AddFocusEvent(focused == GLFW_TRUE);
+    });
+}
 }
 
 UISystem::UISystem(GLFWwindow* window, ApplicationState& state, Provider& provider)
@@ -161,6 +214,7 @@ UISystem::UISystem(GLFWwindow* window, ApplicationState& state, Provider& provid
 Result UISystem::init() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    m_main_context = ImGui::GetCurrentContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
     load_system_font();
@@ -168,12 +222,14 @@ Result UISystem::init() {
 
     if (!ImGui_ImplGlfw_InitForOpenGL(m_window, true)) {
         ImGui::DestroyContext();
+        m_main_context = nullptr;
         return result_error("Failed to initialize Dear ImGui Glfw OpenGL backend");
     }
 
     if (!ImGui_ImplOpenGL3_Init("#version 150")) {
         ImGui_ImplGlfw_Shutdown();
         ImGui::DestroyContext();
+        m_main_context = nullptr;
         return result_error("Failed to initialize Dear ImGui OpenGL 3 backend");
     }
 
@@ -183,13 +239,19 @@ Result UISystem::init() {
 }
 
 void UISystem::deinit() {
+    close_settings_window();
+    glfwMakeContextCurrent(m_window);
+    ImGui::SetCurrentContext(m_main_context);
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
+    m_main_context = nullptr;
     m_initialized = false;
 }
 
 void UISystem::new_frame() {
+    glfwMakeContextCurrent(m_window);
+    ImGui::SetCurrentContext(m_main_context);
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
@@ -209,6 +271,11 @@ void UISystem::prepare_backbuffer() {
 }
 
 void UISystem::render_frame_to_backbuffer() {
+    if (m_open_settings_requested) {
+        m_open_settings_requested = false;
+        open_settings_window();
+    }
+
     new_frame();
 
     for (const Event& event : m_provider.poll_events(&m_provider)) {
@@ -307,6 +374,8 @@ void UISystem::render_frame_to_backbuffer() {
     }
     if (ImGui::BeginMainMenuBar()) {
         if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Settings"))
+                m_open_settings_requested = true;
             if (ImGui::MenuItem("Close"))
                 glfwSetWindowShouldClose(m_window, GLFW_TRUE);
             ImGui::EndMenu();
@@ -320,4 +389,168 @@ void UISystem::render_frame_to_backbuffer() {
                       m_next_turn_id, m_progress_text, m_progress_conversation_id);
 
     prepare_backbuffer();
+    render_settings_window();
+}
+
+bool UISystem::open_settings_window() {
+    if (m_settings_window != nullptr) {
+        glfwShowWindow(m_settings_window);
+        glfwFocusWindow(m_settings_window);
+        return true;
+    }
+
+    glfwMakeContextCurrent(m_window);
+    glfwDefaultWindowHints();
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+#ifdef __APPLE__
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
+#endif
+
+    GLFWwindow* settings_window = glfwCreateWindow(760, 560, "Zenith Settings", nullptr,
+                                                   m_window);
+    if (settings_window == nullptr) {
+        glfwMakeContextCurrent(m_window);
+        return false;
+    }
+
+    ImGui::SetCurrentContext(m_main_context);
+    ImGuiContext* settings_context = ImGui::CreateContext(ImGui::GetIO().Fonts);
+    set_premiere_theme();
+
+    m_settings_window = settings_window;
+    m_settings_context = settings_context;
+    glfwSetWindowUserPointer(m_settings_window, m_settings_context);
+    glfwSetCursorPosCallback(m_settings_window, settings_cursor_position_callback);
+    glfwSetCursorEnterCallback(m_settings_window, settings_cursor_enter_callback);
+    glfwSetMouseButtonCallback(m_settings_window, settings_mouse_button_callback);
+    glfwSetScrollCallback(m_settings_window, settings_scroll_callback);
+    glfwSetWindowFocusCallback(m_settings_window, settings_focus_callback);
+    glfwMakeContextCurrent(m_window);
+    ImGui::SetCurrentContext(m_main_context);
+    glfwShowWindow(m_settings_window);
+    glfwFocusWindow(m_settings_window);
+    return true;
+}
+
+void UISystem::close_settings_window() {
+    if (m_settings_window == nullptr)
+        return;
+
+    ImGui::SetCurrentContext(m_settings_context);
+    ImGui::DestroyContext(m_settings_context);
+    glfwDestroyWindow(m_settings_window);
+    m_settings_window = nullptr;
+    m_settings_context = nullptr;
+    m_settings_last_frame_time = 0.0;
+    glfwMakeContextCurrent(m_window);
+    ImGui::SetCurrentContext(m_main_context);
+}
+
+void UISystem::render_settings_window() {
+    if (m_settings_window == nullptr)
+        return;
+    if (glfwWindowShouldClose(m_settings_window)) {
+        close_settings_window();
+        return;
+    }
+
+    glfwMakeContextCurrent(m_settings_window);
+    ImGui::SetCurrentContext(m_settings_context);
+    ImGuiIO& io = ImGui::GetIO();
+    int window_width;
+    int window_height;
+    int framebuffer_width;
+    int framebuffer_height;
+    glfwGetWindowSize(m_settings_window, &window_width, &window_height);
+    glfwGetFramebufferSize(m_settings_window, &framebuffer_width, &framebuffer_height);
+    io.DisplaySize = ImVec2(static_cast<float>(window_width), static_cast<float>(window_height));
+    io.DisplayFramebufferScale = ImVec2(
+        window_width > 0 ? static_cast<float>(framebuffer_width) / window_width : 1.0f,
+        window_height > 0 ? static_cast<float>(framebuffer_height) / window_height : 1.0f);
+    const double current_time = glfwGetTime();
+    io.DeltaTime = m_settings_last_frame_time > 0.0
+                       ? std::max(0.001f, static_cast<float>(current_time - m_settings_last_frame_time))
+                       : 1.0f / 60.0f;
+    m_settings_last_frame_time = current_time;
+    ImGui::NewFrame();
+    render_settings_contents();
+    ImGui::Render();
+    ImDrawData* settings_draw_data = ImGui::GetDrawData();
+
+    int width;
+    int height;
+    glfwGetFramebufferSize(m_settings_window, &width, &height);
+    ImGui::SetCurrentContext(m_main_context);
+    glfwMakeContextCurrent(m_settings_window);
+    glViewport(0, 0, width, height);
+    glClearColor(0.075f, 0.075f, 0.075f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT);
+    ImGui_ImplOpenGL3_RenderDrawData(settings_draw_data);
+    glfwSwapBuffers(m_settings_window);
+
+    glfwMakeContextCurrent(m_window);
+    ImGui::SetCurrentContext(m_main_context);
+}
+
+void UISystem::render_settings_contents() {
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(viewport->WorkPos);
+    ImGui::SetNextWindowSize(viewport->WorkSize);
+    constexpr ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoTitleBar |
+                                              ImGuiWindowFlags_NoResize |
+                                              ImGuiWindowFlags_NoMove |
+                                              ImGuiWindowFlags_NoCollapse |
+                                              ImGuiWindowFlags_NoSavedSettings;
+    ImGui::Begin("Settings", nullptr, window_flags);
+
+    ImGui::BeginChild("##settings_sidebar", ImVec2(180.0f, 0.0f), true);
+    ImGui::TextDisabled("SETTINGS");
+    ImGui::Spacing();
+    ImGui::Selectable("Providers", true);
+    ImGui::EndChild();
+    ImGui::SameLine();
+
+    ImGui::BeginChild("##settings_content", ImVec2(0.0f, 0.0f), false);
+    ImGui::TextUnformatted("Providers");
+    ImGui::TextDisabled("Codex app-server status and CLI location");
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    ImGui::BeginChild("##codex_provider", ImVec2(0.0f, 142.0f), true);
+    ImGui::TextUnformatted("Codex");
+    ImGui::SameLine();
+    ImGui::TextDisabled("Provider");
+    ImGui::Spacing();
+
+    const char* availability = "Unknown";
+    const char* availability_detail = "The app-server has not been checked.";
+    ImVec4 availability_color = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
+    if (m_provider.availability == ProviderAvailability::Available) {
+        availability = "Available";
+        availability_detail = "Codex app-server responded during startup.";
+        availability_color = ImVec4(0.42f, 0.78f, 0.50f, 1.0f);
+    } else if (m_provider.availability == ProviderAvailability::Unavailable) {
+        availability = "Unavailable";
+        availability_detail = "Codex app-server did not respond during startup.";
+        availability_color = ImVec4(0.90f, 0.38f, 0.34f, 1.0f);
+    }
+
+    ImGui::TextDisabled("Status");
+    ImGui::SameLine(112.0f);
+    ImGui::TextColored(availability_color, "%s", availability);
+    ImGui::TextDisabled("%s", availability_detail);
+    ImGui::TextDisabled("Location");
+    ImGui::SameLine(112.0f);
+    if (m_provider.location.empty())
+        ImGui::TextWrapped("Codex executable not found");
+    else
+        ImGui::TextWrapped("%s", m_provider.location.string().c_str());
+    ImGui::EndChild();
+    ImGui::EndChild();
+
+    ImGui::End();
 }

@@ -4,9 +4,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <mutex>
 #include <string>
 #include <csignal>
+#include <system_error>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -18,6 +20,45 @@ namespace {
 std::string string_value(const Json& value, const char* key) {
     return value.contains(key) && value[key].is_string() ? value[key].get<std::string>()
                                                          : std::string{};
+}
+
+std::filesystem::path resolve_executable(const std::filesystem::path& executable) {
+    if (executable.empty())
+        return {};
+
+    auto executable_path = [](const std::filesystem::path& path) {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error) || error ||
+            access(path.c_str(), X_OK) != 0)
+            return std::filesystem::path{};
+        const std::filesystem::path resolved = std::filesystem::canonical(path, error);
+        return error ? path : resolved;
+    };
+
+    if (executable.has_parent_path())
+        return executable_path(executable);
+
+    const char* path_value = std::getenv("PATH");
+    if (path_value == nullptr)
+        return {};
+
+    const std::string search_path(path_value);
+    std::size_t start = 0;
+    while (start <= search_path.size()) {
+        const std::size_t end = search_path.find(':', start);
+        const std::string directory = search_path.substr(
+            start, end == std::string::npos ? std::string::npos : end - start);
+        const std::filesystem::path candidate =
+            (directory.empty() ? std::filesystem::path(".") : std::filesystem::path(directory)) /
+            executable;
+        const std::filesystem::path resolved = executable_path(candidate);
+        if (!resolved.empty())
+            return resolved;
+        if (end == std::string::npos)
+            break;
+        start = end + 1;
+    }
+    return {};
 }
 
 struct CodexProcess;
@@ -250,7 +291,8 @@ std::string conversation_prompt(const TurnRequest* request) {
 }
 
 std::vector<ModelOption> fetch_codex_models(const CodexOptions* options,
-                                            ProviderRuntime* runtime) {
+                                            ProviderRuntime* runtime,
+                                            ProviderAvailability* availability) {
     static const bool ignore_sigpipe = [] {
         std::signal(SIGPIPE, SIG_IGN);
         return true;
@@ -258,6 +300,7 @@ std::vector<ModelOption> fetch_codex_models(const CodexOptions* options,
     (void)ignore_sigpipe;
 
     std::vector<ModelOption> models;
+    *availability = ProviderAvailability::Unavailable;
     CodexProcess process;
     if (start_codex_process(options, &process).status == ResultStatus::Error) {
         force_stop_codex_process(&process);
@@ -277,6 +320,8 @@ std::vector<ModelOption> fetch_codex_models(const CodexOptions* options,
                    wait_for_response(&process, 1, &stream, nullptr, &error) &&
                    write_message(process.input,
                                  Json{{"method", "initialized"}, {"params", Json::object()}});
+    if (success)
+        *availability = ProviderAvailability::Available;
     std::string cursor;
     int request_id = 2;
     while (success) {
@@ -462,8 +507,13 @@ void process_codex(void* context, const TurnRequest* request, ProviderRuntime* r
 Result start_codex(Provider* provider) {
     CodexState* state = static_cast<CodexState*>(provider->state);
     provider->default_model = state->options.default_model;
-    if (state->options.execute == nullptr)
-        provider->models = fetch_codex_models(&state->options, &state->runtime);
+    if (state->options.execute == nullptr) {
+        provider->location = resolve_executable(state->options.executable);
+        if (!provider->location.empty())
+            state->options.executable = provider->location;
+        provider->models = fetch_codex_models(&state->options, &state->runtime,
+                                              &provider->availability);
+    }
     if (provider->models.empty())
         provider->models.push_back({state->options.default_model,
                                     state->options.default_model, {}, {}});

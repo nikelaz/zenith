@@ -66,6 +66,7 @@ struct TurnRequest {
 };
 
 enum class ApprovalDecision { ApproveOnce, Deny };
+enum class ProviderAvailability { Unknown, Available, Unavailable };
 
 struct Provider;
 using ProviderStartFn = Result (*)(Provider*);
@@ -87,6 +88,8 @@ struct Provider {
     ProviderDestroyFn destroy;
     std::vector<ModelOption> models{};
     std::string default_model{};
+    ProviderAvailability availability = ProviderAvailability::Unknown;
+    std::filesystem::path location{};
 };
 
 inline void destroy_provider(Provider* provider) {
