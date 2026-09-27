@@ -34,6 +34,10 @@ struct ModelOption {
     std::vector<PermissionOption> permission_modes;
 };
 
+struct FileReference {
+    std::filesystem::path path;
+};
+
 enum class EventKind {
     ProviderThreadStarted,
     AssistantTextDelta,
@@ -70,6 +74,7 @@ struct TurnRequest {
     ConversationId conversation_id;
     std::string prompt;
     std::vector<ChatMessage> history;
+    std::vector<FileReference> file_references;
     std::filesystem::path working_directory;
     std::string model;
     std::string provider_thread_id;

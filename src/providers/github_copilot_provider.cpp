@@ -397,6 +397,19 @@ std::string conversation_prompt(const TurnRequest* request) {
     return prompt;
 }
 
+Json copilot_prompt_content(const TurnRequest* request) {
+    Json content = Json::array();
+    content.push_back({{"type", "text"}, {"text", conversation_prompt(request)}});
+    for (const FileReference& reference : request->file_references) {
+        content.push_back({
+            {"type", "text"},
+            {"text", "The user referenced this workspace-relative file: " +
+                         reference.path.generic_string() + ". Read it if relevant."},
+        });
+    }
+    return content;
+}
+
 Result run_github_copilot(CopilotState* state, const TurnRequest* request,
                           ProviderRuntime* runtime) {
     child_process_ignore_sigpipe();
@@ -450,8 +463,7 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
             {"id", 3},
             {"method", "session/prompt"},
             {"params", {{"sessionId", session_id},
-                        {"prompt", Json::array({{{"type", "text"},
-                                                  {"text", conversation_prompt(request)}}})}}},
+                        {"prompt", copilot_prompt_content(request)}}},
         };
         Json response;
         success = write_message(process.input, prompt) &&

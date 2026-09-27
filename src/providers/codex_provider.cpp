@@ -245,6 +245,19 @@ std::string conversation_prompt(const TurnRequest* request) {
     return prompt;
 }
 
+Json codex_prompt_content(const TurnRequest* request) {
+    Json content = Json::array();
+    content.push_back({{"type", "text"}, {"text", conversation_prompt(request)}});
+    for (const FileReference& reference : request->file_references) {
+        content.push_back({
+            {"type", "text"},
+            {"text", "The user referenced this workspace-relative file: " +
+                         reference.path.generic_string() + ". Read it if relevant."},
+        });
+    }
+    return content;
+}
+
 std::vector<ModelOption> fetch_codex_models(CodexState* state,
                                             ProviderRuntime* runtime,
                                             ProviderAvailability* availability) {
@@ -416,7 +429,7 @@ Result run_codex(CodexState* state, const TurnRequest* request,
     if (success) {
         Json turn_params = {
             {"threadId", thread_id},
-            {"input", Json::array({{{"type", "text"}, {"text", conversation_prompt(request)}}})},
+            {"input", codex_prompt_content(request)},
         };
         if (!request->model.empty())
             turn_params["model"] = request->model;

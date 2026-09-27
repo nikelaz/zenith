@@ -8,6 +8,7 @@
 #include <cctype>
 #include <initializer_list>
 #include <limits>
+#include <system_error>
 #include <string_view>
 #include <utility>
 
@@ -794,6 +795,238 @@ void render_user_message(const ChatMessage& message) {
     ImGui::Dummy(ImVec2(available_width, bubble_height));
 }
 
+constexpr std::size_t file_picker_result_limit = 50;
+constexpr std::size_t file_picker_scan_budget = 300;
+constexpr std::size_t file_picker_visible_rows = 5;
+constexpr float file_picker_row_height = 28.0f;
+constexpr float file_picker_top_padding = 4.0f;
+constexpr float file_picker_bottom_padding = 6.0f;
+
+float file_picker_height(const ChatPanelState& panel_state) {
+    const std::size_t rows = std::clamp(panel_state.file_picker_results.size(),
+                                        std::size_t{1}, file_picker_visible_rows);
+    return file_picker_top_padding + rows * file_picker_row_height +
+           file_picker_bottom_padding;
+}
+
+std::string lowercase(std::string value) {
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    return value;
+}
+
+bool find_file_reference_query(const std::string& input, ImGuiInputTextState* input_state,
+                               std::size_t* replace_start, std::size_t* replace_end,
+                               std::string* query) {
+    if (input_state == nullptr || input_state->HasSelection())
+        return false;
+
+    const std::size_t cursor = std::min(input.size(),
+        static_cast<std::size_t>(std::max(0, input_state->GetCursorPos())));
+    if (cursor == 0)
+        return false;
+
+    const std::size_t at = input.rfind('@', cursor - 1);
+    if (at == std::string::npos)
+        return false;
+    if (at > 0) {
+        const unsigned char previous = static_cast<unsigned char>(input[at - 1]);
+        if (!std::isspace(previous) && input[at - 1] != '(' && input[at - 1] != '[' &&
+            input[at - 1] != '{' && input[at - 1] != '"' && input[at - 1] != '\'')
+            return false;
+    }
+
+    const std::size_t token_end = input.find_first_of(" \t\r\n", at + 1);
+    const std::size_t end = token_end == std::string::npos ? input.size() : token_end;
+    if (cursor > end)
+        return false;
+
+    *replace_start = at;
+    *replace_end = end;
+    *query = input.substr(at + 1, end - at - 1);
+    return true;
+}
+
+void sort_file_picker_results(ChatPanelState& panel_state) {
+    std::sort(panel_state.file_picker_results.begin(), panel_state.file_picker_results.end(),
+              [](const std::filesystem::path& left, const std::filesystem::path& right) {
+                  return left.generic_string() < right.generic_string();
+              });
+}
+
+void reset_file_picker_search(ChatPanelState& panel_state,
+                              const std::filesystem::path& root,
+                              const std::string& query) {
+    panel_state.file_picker_root = root.lexically_normal();
+    panel_state.file_picker_query = lowercase(query);
+    panel_state.file_picker_results.clear();
+    panel_state.file_picker_selected = 0;
+
+    if (root.empty()) {
+        panel_state.file_picker_scan_complete = true;
+        return;
+    }
+
+    std::error_code error;
+    panel_state.file_picker_iterator = std::filesystem::recursive_directory_iterator(
+        root, std::filesystem::directory_options::skip_permission_denied, error);
+    panel_state.file_picker_scan_complete = error ||
+        panel_state.file_picker_iterator == panel_state.file_picker_end;
+    if (panel_state.file_picker_scan_complete)
+        sort_file_picker_results(panel_state);
+}
+
+void advance_file_picker_search(ChatPanelState& panel_state,
+                                const std::filesystem::path& root) {
+    if (panel_state.file_picker_scan_complete)
+        return;
+
+    std::size_t scanned = 0;
+    while (panel_state.file_picker_iterator != panel_state.file_picker_end &&
+           scanned < file_picker_scan_budget &&
+           panel_state.file_picker_results.size() < file_picker_result_limit) {
+        const std::filesystem::directory_entry entry = *panel_state.file_picker_iterator;
+        ++scanned;
+
+        std::error_code entry_error;
+        if (entry.is_directory(entry_error)) {
+            if (entry.path().filename() == ".git")
+                panel_state.file_picker_iterator.disable_recursion_pending();
+        } else if (!entry_error && entry.is_regular_file(entry_error) && !entry_error) {
+            const std::filesystem::path relative = entry.path().lexically_relative(root);
+            const std::string display_path = relative.generic_string();
+            if (lowercase(display_path).find(panel_state.file_picker_query) !=
+                std::string::npos)
+                panel_state.file_picker_results.push_back(relative);
+        }
+
+        std::error_code increment_error;
+        panel_state.file_picker_iterator.increment(increment_error);
+        if (increment_error) {
+            panel_state.file_picker_scan_complete = true;
+            break;
+        }
+    }
+
+    if (panel_state.file_picker_iterator == panel_state.file_picker_end ||
+        panel_state.file_picker_results.size() == file_picker_result_limit) {
+        panel_state.file_picker_scan_complete = true;
+    }
+    if (panel_state.file_picker_scan_complete)
+        sort_file_picker_results(panel_state);
+}
+
+void select_file_reference(ChatPanelState& panel_state, std::string& input,
+                           ImGuiInputTextState* input_state,
+                           const std::filesystem::path& path) {
+    const std::string reference = "@" + path.generic_string();
+    input.replace(panel_state.file_picker_replace_start,
+                  panel_state.file_picker_replace_end - panel_state.file_picker_replace_start,
+                  reference + " ");
+
+    const auto existing = std::find_if(panel_state.file_references.begin(),
+                                       panel_state.file_references.end(),
+        [&](const FileReference& item) { return item.path == path; });
+    if (existing == panel_state.file_references.end())
+        panel_state.file_references.push_back({path});
+
+    if (input_state != nullptr)
+        input_state->ReloadUserBufAndMoveToEnd();
+    panel_state.file_picker_open = false;
+    panel_state.restore_input_focus = true;
+}
+
+void render_file_picker(ChatPanelState& panel_state, std::string& input,
+                        ImGuiInputTextState* input_state, ImVec2 input_position,
+                        float width, bool* enter) {
+    if (!panel_state.file_picker_open)
+        return;
+
+    bool selection_changed = false;
+    if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, false) &&
+        !panel_state.file_picker_results.empty()) {
+        panel_state.file_picker_selected = std::min(
+            panel_state.file_picker_selected + 1,
+            panel_state.file_picker_results.size() - 1);
+        selection_changed = true;
+    } else if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, false) &&
+               !panel_state.file_picker_results.empty()) {
+        if (panel_state.file_picker_selected > 0)
+            --panel_state.file_picker_selected;
+        selection_changed = true;
+    }
+
+    if (*enter) {
+        *enter = false;
+        if (!panel_state.file_picker_results.empty()) {
+            select_file_reference(panel_state, input, input_state,
+                panel_state.file_picker_results[panel_state.file_picker_selected]);
+            return;
+        }
+    }
+
+    const float height = file_picker_height(panel_state);
+    const ImVec2 popup_min(input_position.x, input_position.y - height - 8.0f);
+    ImGui::SetNextWindowPos(popup_min);
+    ImGui::SetNextWindowSize(ImVec2(width, height));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, file_picker_top_padding));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(27.0f / 255.0f,
+                                                   27.0f / 255.0f,
+                                                   27.0f / 255.0f, 1.0f));
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoScrollbar;
+    if (ImGui::Begin("##file-reference-picker", nullptr, flags)) {
+        if (panel_state.file_picker_results.empty()) {
+            const ImVec2 row_min = ImGui::GetCursorScreenPos();
+            ImGui::Dummy(ImVec2(width, file_picker_row_height));
+            const char* status = panel_state.file_picker_scan_complete
+                ? "No matching files" : "Searching workspace...";
+            ImGui::GetWindowDrawList()->AddText(
+                ImVec2(row_min.x + 12.0f,
+                       row_min.y + (file_picker_row_height - ImGui::GetFontSize()) * 0.5f),
+                ImGui::GetColorU32(ImGuiCol_TextDisabled), status);
+        } else {
+            for (std::size_t index = 0; index < panel_state.file_picker_results.size(); ++index) {
+                const std::string display_path =
+                    panel_state.file_picker_results[index].generic_string();
+                const bool selected = panel_state.file_picker_selected == index;
+                ImGui::PushID(static_cast<int>(index));
+                const bool clicked = ImGui::InvisibleButton(
+                    "##file-reference-row", ImVec2(width, file_picker_row_height));
+                const ImVec2 row_min = ImGui::GetItemRectMin();
+                if (selected || ImGui::IsItemHovered()) {
+                    ImGui::GetWindowDrawList()->AddRectFilled(
+                        row_min, ImGui::GetItemRectMax(),
+                        ImGui::GetColorU32(ImVec4(51.0f / 255.0f,
+                                                  51.0f / 255.0f,
+                                                  51.0f / 255.0f, 1.0f)));
+                }
+                ImGui::GetWindowDrawList()->AddText(
+                    ImVec2(row_min.x + 12.0f,
+                           row_min.y + (file_picker_row_height - ImGui::GetFontSize()) * 0.5f),
+                    ImGui::GetColorU32(ImGuiCol_Text), display_path.c_str());
+                if (selected && selection_changed)
+                    ImGui::SetScrollHereY(0.5f);
+                ImGui::PopID();
+                if (clicked) {
+                    select_file_reference(panel_state, input, input_state,
+                                          panel_state.file_picker_results[index]);
+                    break;
+                }
+            }
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(4);
+}
+
 }
 
 void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& providers,
@@ -855,6 +1088,13 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         state.selected_thread < state.projects[state.selected_project].threads.size()) {
         ChatProject& project = state.projects[state.selected_project];
         std::vector<ChatThread>& threads = project.threads;
+        const std::filesystem::path project_root = project.directory.lexically_normal();
+        if (panel_state.file_references_root != project_root) {
+            panel_state.file_references.clear();
+            panel_state.file_references_root = project_root;
+        }
+        if (panel_state.file_picker_open && panel_state.file_picker_root != project_root)
+            panel_state.file_picker_open = false;
         ChatThread& thread = threads[state.selected_thread];
         constexpr float outer_padding = 8.0f;
         constexpr float input_height = 58.0f;
@@ -977,14 +1217,26 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         ImGui::SetCursorScreenPos(ImVec2(input_pos.x + outer_padding,
                                          input_pos.y + outer_padding));
-        const bool enter = ImGui::InputTextMultiline(
+        if (panel_state.restore_input_focus) {
+            ImGui::SetKeyboardFocusHere();
+            panel_state.restore_input_focus = false;
+        }
+        bool enter = ImGui::InputTextMultiline(
             "##message-input", &message_input,
             ImVec2(full_width - outer_padding * 2.0f, input_height),
             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine);
+        const bool input_active = ImGui::IsItemActive();
+        ImGuiInputTextState* input_state = ImGui::GetInputTextState(ImGui::GetItemID());
+        if (panel_state.file_picker_open && input_active && input_state != nullptr &&
+            (ImGui::IsKeyPressed(ImGuiKey_UpArrow, false) ||
+             ImGui::IsKeyPressed(ImGuiKey_DownArrow, false))) {
+            const int cursor = static_cast<int>(std::min(
+                panel_state.file_picker_cursor, message_input.size()));
+            input_state->SetSelection(cursor, cursor);
+        }
         static std::string composer_context_selection;
         if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(1)) {
             composer_context_selection.clear();
-            ImGuiInputTextState* input_state = ImGui::GetInputTextState(ImGui::GetItemID());
             if (input_state != nullptr && input_state->HasSelection()) {
                 const int first = input_state->GetSelectionStart();
                 const int last = input_state->GetSelectionEnd();
@@ -999,6 +1251,42 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         }
         ImGui::PopStyleColor(3);
         ImGui::PopStyleVar();
+
+        std::size_t replace_start = 0;
+        std::size_t replace_end = 0;
+        std::string file_query;
+        const bool has_file_query = input_active && find_file_reference_query(
+            message_input, input_state, &replace_start, &replace_end, &file_query);
+        if (has_file_query) {
+            panel_state.file_picker_open = true;
+            panel_state.file_picker_replace_start = replace_start;
+            panel_state.file_picker_replace_end = replace_end;
+            panel_state.file_picker_cursor = input_state->GetCursorPos();
+            if (panel_state.file_picker_root != project_root ||
+                panel_state.file_picker_query != lowercase(file_query))
+                reset_file_picker_search(panel_state, project_root, file_query);
+        } else if (input_active) {
+            panel_state.file_picker_open = false;
+        }
+        if (panel_state.file_picker_open)
+            advance_file_picker_search(panel_state, panel_state.file_picker_root);
+        if (!input_active && panel_state.file_picker_open && ImGui::IsMouseClicked(0)) {
+            const ImVec2 mouse = ImGui::GetIO().MousePos;
+            const bool over_input = mouse.x >= input_pos.x + outer_padding &&
+                mouse.x < input_pos.x + full_width - outer_padding &&
+                mouse.y >= input_pos.y + outer_padding &&
+                mouse.y < input_pos.y + outer_padding + input_height;
+            const float popup_height = file_picker_height(panel_state);
+            const ImVec2 popup_min(input_pos.x,
+                                   input_pos.y - popup_height - outer_padding);
+            const bool over_picker = mouse.x >= popup_min.x &&
+                mouse.x < popup_min.x + full_width &&
+                mouse.y >= popup_min.y && mouse.y < popup_min.y + popup_height;
+            if (!over_input && !over_picker)
+                panel_state.file_picker_open = false;
+        }
+        render_file_picker(panel_state, message_input, input_state, input_pos,
+                           full_width, &enter);
         const ImVec2 send_pos(frame_max.x - send_size - outer_padding,
                               divider_y + (footer_height - send_size) * 0.5f);
         const float selector_y = divider_y + (footer_height - ImGui::GetFrameHeight()) * 0.5f;
@@ -1153,6 +1441,12 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             request.conversation_id = destination.id;
             request.prompt = std::move(prompt);
             request.history = destination.messages;
+            for (const FileReference& reference : panel_state.file_references) {
+                const std::string token = "@" + reference.path.generic_string();
+                if (request.prompt.find(token) != std::string::npos)
+                    request.file_references.push_back(reference);
+            }
+            panel_state.file_references.clear();
             request.working_directory = project.directory;
             request.model = selected_model;
             request.reasoning_effort = selected_reasoning_effort;
