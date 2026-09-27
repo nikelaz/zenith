@@ -471,7 +471,7 @@ void UISystem::render_frame_to_backbuffer() {
         const float menu_row_height = ImGui::GetFrameHeight();
         float next_item_x = menu_row_pos.x;
         if (m_menu_icon_texture != 0) {
-            constexpr float icon_size = 21.0f;
+            constexpr float icon_size = 16.0f;
             constexpr float icon_label_spacing = 6.0f;
             ImGui::GetWindowDrawList()->AddImage(
                 ImTextureRef(static_cast<ImTextureID>(m_menu_icon_texture)),
@@ -539,8 +539,7 @@ void UISystem::render_frame_to_backbuffer() {
                                    !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
 #ifdef ZENITH_HAS_WAYLAND_WINDOW_DRAG
             if (m_dragging_title_bar && glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
-                if (zenith_begin_wayland_window_drag(m_window))
-                    glfwFocusWindow(m_window);
+                zenith_begin_wayland_window_drag(m_window);
                 m_dragging_title_bar = false;
             }
 #endif
