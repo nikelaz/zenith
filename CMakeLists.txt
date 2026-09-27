@@ -187,6 +187,7 @@ add_executable(Zenith
     src/providers/fake_provider.cpp
     src/application.cpp
     src/persistence/persistent-store.cpp
+    src/ui/card.cpp
     src/ui/chat-panel.cpp
     src/ui/dock-area.cpp
     src/ui/threads-panel.cpp

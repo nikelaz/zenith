@@ -1,4 +1,5 @@
 #include "ui-system.h"
+#include "card.h"
 #include "chat-panel.h"
 #include "dock-area.h"
 #include "imgui.h"
@@ -521,54 +522,45 @@ void UISystem::render_settings_contents() {
                                               ImGuiWindowFlags_NoResize |
                                               ImGuiWindowFlags_NoMove |
                                               ImGuiWindowFlags_NoCollapse |
-                                              ImGuiWindowFlags_NoSavedSettings;
+                                              ImGuiWindowFlags_NoSavedSettings |
+                                              ImGuiWindowFlags_NoScrollbar |
+                                              ImGuiWindowFlags_NoScrollWithMouse;
     ImGui::Begin("Settings", nullptr, window_flags);
 
-    ImGui::BeginChild("##settings_sidebar", ImVec2(180.0f, 0.0f), true);
+    ImGui::BeginChild("##settings_sidebar", ImVec2(180.0f, 0.0f),
+                      ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_NoScrollbar |
+                          ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::TextDisabled("SETTINGS");
     ImGui::Spacing();
     ImGui::Selectable("Providers", true);
     ImGui::EndChild();
     ImGui::SameLine();
 
-    ImGui::BeginChild("##settings_content", ImVec2(0.0f, 0.0f), false);
-    ImGui::TextUnformatted("Providers");
-    ImGui::TextDisabled("Codex app-server status and CLI location");
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    ImGui::BeginChild("##codex_provider", ImVec2(0.0f, 142.0f), true);
-    ImGui::TextUnformatted("Codex");
-    ImGui::SameLine();
-    ImGui::TextDisabled("Provider");
-    ImGui::Spacing();
-
     const char* availability = "Unknown";
-    const char* availability_detail = "The app-server has not been checked.";
     ImVec4 availability_color = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
     if (m_provider.availability == ProviderAvailability::Available) {
         availability = "Available";
-        availability_detail = "Codex app-server responded during startup.";
         availability_color = ImVec4(0.42f, 0.78f, 0.50f, 1.0f);
     } else if (m_provider.availability == ProviderAvailability::Unavailable) {
         availability = "Unavailable";
-        availability_detail = "Codex app-server did not respond during startup.";
         availability_color = ImVec4(0.90f, 0.38f, 0.34f, 1.0f);
     }
 
-    ImGui::TextDisabled("Status");
-    ImGui::SameLine(112.0f);
-    ImGui::TextColored(availability_color, "%s", availability);
-    ImGui::TextDisabled("%s", availability_detail);
-    ImGui::TextDisabled("Location");
-    ImGui::SameLine(112.0f);
-    if (m_provider.location.empty())
-        ImGui::TextWrapped("Codex executable not found");
-    else
-        ImGui::TextWrapped("%s", m_provider.location.string().c_str());
-    ImGui::EndChild();
-    ImGui::EndChild();
+    if (begin_ui_card("##codex_provider")) {
+        ImGui::TextUnformatted("Codex");
+        ImGui::Spacing();
+        ImGui::TextDisabled("Status");
+        ImGui::SameLine(112.0f);
+        ImGui::TextColored(availability_color, "%s", availability);
+        ImGui::TextDisabled("Location");
+        ImGui::SameLine(112.0f);
+        if (m_provider.location.empty())
+            ImGui::TextWrapped("Codex executable not found");
+        else
+            ImGui::TextWrapped("%s", m_provider.location.string().c_str());
+    }
+    end_ui_card();
 
     ImGui::End();
 }
