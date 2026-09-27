@@ -32,12 +32,19 @@ struct ChatSegment {
     ToolActivity tool;
 };
 
+struct ChatAttachment {
+    std::string filename;
+    std::string media_type;
+    std::size_t size_bytes = 0;
+};
+
 struct ChatMessage {
     ChatMessageRole role;
     std::string content;
     std::string reasoning;
     std::vector<std::string> tool_activities;
     std::vector<ChatSegment> segments;
+    std::vector<ChatAttachment> attachments;
 };
 
 struct ChatThread {

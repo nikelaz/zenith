@@ -3,9 +3,11 @@
 #include "imgui_internal.h"
 #include "imgui_md.h"
 #include "misc/cpp/imgui_stdlib.h"
+#include <tinyfiledialogs.h>
 #include <algorithm>
 #include <cfloat>
 #include <cctype>
+#include <fstream>
 #include <initializer_list>
 #include <limits>
 #include <system_error>
@@ -16,6 +18,96 @@ namespace {
 constexpr float chat_component_spacing = 13.0f;
 constexpr float chat_line_height_ratio = 1.5f;
 bool has_chat_component = false;
+
+std::string attachment_media_type(const std::filesystem::path& path) {
+    std::string extension = path.extension().string();
+    std::transform(extension.begin(), extension.end(), extension.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (extension == ".txt" || extension == ".log") return "text/plain";
+    if (extension == ".md") return "text/markdown";
+    if (extension == ".csv") return "text/csv";
+    if (extension == ".json") return "application/json";
+    if (extension == ".png") return "image/png";
+    if (extension == ".jpg" || extension == ".jpeg") return "image/jpeg";
+    if (extension == ".gif") return "image/gif";
+    if (extension == ".webp") return "image/webp";
+    if (extension == ".heic") return "image/heic";
+    if (extension == ".heif") return "image/heif";
+    if (extension == ".pdf") return "application/pdf";
+    if (extension == ".rtf") return "application/rtf";
+    if (extension == ".doc") return "application/msword";
+    if (extension == ".docx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+    if (extension == ".docm") return "application/vnd.ms-word.document.macroEnabled.12";
+    if (extension == ".dot") return "application/msword";
+    if (extension == ".dotx") return "application/vnd.openxmlformats-officedocument.wordprocessingml.template";
+    if (extension == ".xls") return "application/vnd.ms-excel";
+    if (extension == ".xlsx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    if (extension == ".xlsm") return "application/vnd.ms-excel.sheet.macroEnabled.12";
+    if (extension == ".xlsb") return "application/vnd.ms-excel.sheet.binary.macroEnabled.12";
+    if (extension == ".xlt") return "application/vnd.ms-excel";
+    if (extension == ".xltx") return "application/vnd.openxmlformats-officedocument.spreadsheetml.template";
+    if (extension == ".ppt") return "application/vnd.ms-powerpoint";
+    if (extension == ".pptx") return "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+    if (extension == ".pptm") return "application/vnd.ms-powerpoint.presentation.macroEnabled.12";
+    if (extension == ".pps") return "application/vnd.ms-powerpoint";
+    if (extension == ".ppsx") return "application/vnd.openxmlformats-officedocument.presentationml.slideshow";
+    if (extension == ".potx") return "application/vnd.openxmlformats-officedocument.presentationml.template";
+    if (extension == ".odt") return "application/vnd.oasis.opendocument.text";
+    if (extension == ".ods") return "application/vnd.oasis.opendocument.spreadsheet";
+    if (extension == ".odp") return "application/vnd.oasis.opendocument.presentation";
+    if (extension == ".odg") return "application/vnd.oasis.opendocument.graphics";
+    if (extension == ".odf") return "application/vnd.oasis.opendocument.formula";
+    if (extension == ".fodt") return "application/vnd.oasis.opendocument.text-flat-xml";
+    if (extension == ".fods") return "application/vnd.oasis.opendocument.spreadsheet-flat-xml";
+    if (extension == ".fodp") return "application/vnd.oasis.opendocument.presentation-flat-xml";
+    if (extension == ".ott") return "application/vnd.oasis.opendocument.text-template";
+    if (extension == ".ots") return "application/vnd.oasis.opendocument.spreadsheet-template";
+    if (extension == ".otp") return "application/vnd.oasis.opendocument.presentation-template";
+    if (extension == ".sxw") return "application/vnd.sun.xml.writer";
+    if (extension == ".sxc") return "application/vnd.sun.xml.calc";
+    if (extension == ".sxi") return "application/vnd.sun.xml.impress";
+    if (extension == ".pages") return "application/x-iwork-pages-sffpages";
+    if (extension == ".numbers") return "application/x-iwork-numbers-sffnumbers";
+    if (extension == ".key") return "application/x-iwork-keynote-sffkey";
+    return "application/octet-stream";
+}
+
+void choose_attachments(ChatPanelState& panel_state) {
+    char* selection = tinyfd_openFileDialog("Attach files", nullptr, 0, nullptr, nullptr, 1);
+    if (selection == nullptr)
+        return;
+    std::string paths(selection);
+    std::size_t start = 0;
+    while (start < paths.size()) {
+        const std::size_t end = paths.find('|', start);
+        const std::filesystem::path path(paths.substr(start, end - start));
+        start = end == std::string::npos ? paths.size() : end + 1;
+        const std::string media_type = attachment_media_type(path);
+        if (media_type.empty()) {
+            panel_state.attachment_error = "Unsupported file type: " + path.filename().string();
+            continue;
+        }
+        const auto duplicate = std::find_if(panel_state.attachments.begin(),
+            panel_state.attachments.end(), [&](const FileAttachment& attachment) {
+                return attachment.filename == path.filename().string() &&
+                       attachment.media_type == media_type;
+            });
+        if (duplicate != panel_state.attachments.end())
+            continue;
+        std::ifstream file(path, std::ios::binary);
+        if (!file) {
+            panel_state.attachment_error = "Could not read file: " + path.filename().string();
+            continue;
+        }
+        FileAttachment attachment;
+        attachment.path = path;
+        attachment.filename = path.filename().string();
+        attachment.media_type = media_type;
+        attachment.content.assign(std::istreambuf_iterator<char>(file),
+                                  std::istreambuf_iterator<char>());
+        panel_state.attachments.push_back(std::move(attachment));
+    }
+}
 
 void begin_chat_component() {
     if (has_chat_component) {
@@ -767,7 +859,115 @@ void render_reasoning(const std::string& reasoning) {
                            reasoning, sans_font, sans_font, {}, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
 }
 
-void render_user_message(const ChatMessage& message) {
+std::string renderable_assistant_text(const std::string& text,
+                                      const std::vector<ChatAttachment>* attachments) {
+    constexpr std::string_view citation_start = "\xEE\x88\x80" "filecite";
+    constexpr std::string_view citation_end = "\xEE\x88\x81";
+    std::string result;
+    std::size_t cursor = 0;
+    for (;;) {
+        const std::size_t start = text.find(citation_start, cursor);
+        if (start == std::string::npos) {
+            result.append(text, cursor);
+            break;
+        }
+        result.append(text, cursor, start - cursor);
+        const std::size_t end = text.find(citation_end, start + citation_start.size());
+        if (end == std::string::npos) {
+            result.append(text, start, std::string::npos);
+            break;
+        }
+
+        const std::string_view reference(text.data() + start + citation_start.size(),
+                                         end - start - citation_start.size());
+        const std::size_t file_index_marker = reference.rfind("file");
+        if (attachments != nullptr && file_index_marker != std::string_view::npos) {
+            const char* digits = reference.data() + file_index_marker + 4;
+            const char* reference_end = reference.data() + reference.size();
+            std::size_t file_index = 0;
+            bool has_index = digits < reference_end;
+            for (; digits < reference_end; ++digits) {
+                if (!std::isdigit(static_cast<unsigned char>(*digits))) {
+                    has_index = false;
+                    break;
+                }
+                file_index = file_index * 10 + static_cast<std::size_t>(*digits - '0');
+            }
+            if (has_index && file_index < attachments->size())
+                result += (*attachments)[file_index].filename;
+        }
+        cursor = end + citation_end.size();
+    }
+    return result;
+}
+
+constexpr float attachment_tag_height = 26.0f;
+constexpr float attachment_tag_spacing = 6.0f;
+constexpr float attachment_tag_row_spacing = 5.0f;
+
+float attachment_tag_width(const std::string& label, bool removable) {
+    const float text_width = measure_text(ImGui::GetFont(), ImGui::GetFontSize(), label).x;
+    return 9.0f + 13.0f + 7.0f + text_width + (removable ? 30.0f : 9.0f);
+}
+
+std::string attachment_tag_label(const std::string& filename, float max_width,
+                                 bool removable) {
+    const float reserved_width = attachment_tag_width("", removable);
+    return elide_tool_title(filename, std::max(1.0f, max_width - reserved_width),
+                            ImGui::GetFont(), ImGui::GetFontSize());
+}
+
+bool render_attachment_tag(const char* id, ImVec2 position, float width,
+                           const std::string& label, bool removable, bool bordered,
+                           bool selectable_text, unsigned int icon_texture) {
+    ImGui::SetCursorScreenPos(position);
+    ImGui::InvisibleButton(id, ImVec2(width, attachment_tag_height));
+    const bool hovered = ImGui::IsItemHovered();
+    const ImVec2 tag_max(position.x + width, position.y + attachment_tag_height);
+    const ImVec4 background = hovered
+        ? ImVec4(0.24f, 0.24f, 0.24f, 1.0f)
+        : ImVec4(0.20f, 0.20f, 0.20f, 1.0f);
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    draw_list->AddRectFilled(position, tag_max, ImGui::GetColorU32(background), 5.0f);
+    if (bordered)
+        draw_list->AddRect(position, tag_max,
+            ImGui::GetColorU32(ImVec4(0.34f, 0.34f, 0.34f, 1.0f)), 5.0f);
+
+    if (icon_texture != 0) {
+        const ImVec2 icon_min(position.x + 11.0f, position.y + 6.6f);
+        const ImVec2 icon_max(icon_min.x + 8.8f, icon_min.y + 12.8f);
+        draw_list->AddImage(ImTextureRef(static_cast<ImTextureID>(icon_texture)),
+            icon_min, icon_max, ImVec2(0, 0), ImVec2(1, 1),
+            ImGui::GetColorU32(ImVec4(0.80f, 0.80f, 0.80f, 1.0f)));
+    }
+
+    ImFont* font = ImGui::GetFont();
+    const float font_size = ImGui::GetFontSize();
+    const ImVec2 label_pos(position.x + 29.0f,
+                           position.y + (attachment_tag_height - font_size) * 0.5f);
+    draw_list->AddText(font, font_size, label_pos,
+                       ImGui::GetColorU32(ImVec4(0.90f, 0.90f, 0.90f, 1.0f)),
+                       label.c_str());
+    if (selectable_text)
+        register_text(label.c_str(), label.c_str() + label.size(),
+                      label_pos, font, font_size);
+
+    if (!removable)
+        return false;
+    const float close_x = tag_max.x - 14.0f;
+    const float close_y = position.y + attachment_tag_height * 0.5f;
+    const bool close_hovered = hovered && ImGui::GetIO().MousePos.x >= tag_max.x - 25.0f;
+    const ImU32 close_color = ImGui::GetColorU32(close_hovered
+        ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f)
+        : ImVec4(0.75f, 0.75f, 0.75f, 1.0f));
+    draw_list->AddLine(ImVec2(close_x - 4.0f, close_y - 4.0f),
+                       ImVec2(close_x + 4.0f, close_y + 4.0f), close_color, 1.7f);
+    draw_list->AddLine(ImVec2(close_x + 4.0f, close_y - 4.0f),
+                       ImVec2(close_x - 4.0f, close_y + 4.0f), close_color, 1.7f);
+    return close_hovered && ImGui::IsItemClicked();
+}
+
+void render_user_message(const ChatMessage& message, unsigned int icon_texture) {
     begin_chat_component();
     constexpr float horizontal_padding = 12.0f;
     constexpr float vertical_padding = 8.0f;
@@ -775,22 +975,71 @@ void render_user_message(const ChatMessage& message) {
     const float available_width = ImGui::GetContentRegionAvail().x;
     const float max_text_width = std::max(1.0f, available_width * max_width_ratio -
                                                    horizontal_padding * 2.0f);
+    ImFont* font = ImGui::GetFont();
+    const float font_size = ImGui::GetFontSize();
     const ImVec2 measured = ImGui::CalcTextSize(message.content.c_str(), nullptr, false,
                                                 max_text_width);
-    const float text_width = std::min(max_text_width, std::max(1.0f, measured.x));
-    const float text_height = wrapped_text_height(message.content, max_text_width,
-                                                   ImGui::GetFont(), ImGui::GetFontSize());
+    const float text_width = message.content.empty() ? 0.0f
+        : std::min(max_text_width, std::max(1.0f, measured.x));
+    const float text_height = message.content.empty() ? 0.0f
+        : wrapped_text_height(message.content, max_text_width, font, font_size);
+    std::vector<std::string> attachment_labels;
+    std::vector<float> attachment_widths;
+    float attachment_width = 0.0f;
+    float row_width = 0.0f;
+    std::size_t attachment_rows = 0;
+    for (const ChatAttachment& attachment : message.attachments) {
+        const std::string label = attachment_tag_label(
+            attachment.filename, max_text_width, false);
+        const float width = attachment_tag_width(label, false);
+        if (attachment_rows == 0) {
+            attachment_rows = 1;
+        } else if (row_width > 0.0f &&
+                   row_width + attachment_tag_spacing + width > max_text_width) {
+            ++attachment_rows;
+            row_width = 0.0f;
+        }
+        if (row_width > 0.0f)
+            row_width += attachment_tag_spacing;
+        row_width += width;
+        attachment_width = std::max(attachment_width, row_width);
+        attachment_labels.push_back(label);
+        attachment_widths.push_back(width);
+    }
+    const float attachment_height = attachment_rows == 0 ? 0.0f
+        : attachment_rows * attachment_tag_height +
+          (attachment_rows - 1) * attachment_tag_row_spacing;
+    const float content_gap = attachment_height > 0.0f && text_height > 0.0f ? 6.0f : 0.0f;
     const ImVec2 row_pos = ImGui::GetCursorScreenPos();
-    const float bubble_width = text_width + horizontal_padding * 2.0f;
-    const float bubble_height = text_height + vertical_padding * 2.0f;
+    const float bubble_width = std::max(1.0f, std::max(text_width, attachment_width)) +
+                               horizontal_padding * 2.0f;
+    const float bubble_height = text_height + attachment_height + content_gap +
+                                vertical_padding * 2.0f;
     const ImVec2 bubble_min(row_pos.x + available_width - bubble_width, row_pos.y);
     const ImVec2 bubble_max(bubble_min.x + bubble_width, bubble_min.y + bubble_height);
 
     ImGui::GetWindowDrawList()->AddRectFilled(
         bubble_min, bubble_max, ImGui::GetColorU32(ImVec4(0.20f, 0.20f, 0.20f, 1.0f)), 6.0f);
-    ImGui::SetCursorScreenPos(ImVec2(bubble_min.x + horizontal_padding,
-                                     bubble_min.y + vertical_padding));
-    render_wrapped_selectable_text(message.content, max_text_width);
+    float chip_x = bubble_min.x + horizontal_padding;
+    float chip_y = bubble_min.y + vertical_padding;
+    for (std::size_t index = 0; index < attachment_labels.size(); ++index) {
+        const float width = attachment_widths[index];
+        if (chip_x > bubble_min.x + horizontal_padding &&
+            chip_x + width > bubble_max.x - horizontal_padding) {
+            chip_x = bubble_min.x + horizontal_padding;
+            chip_y += attachment_tag_height + attachment_tag_row_spacing;
+        }
+        ImGui::PushID(static_cast<int>(index));
+        render_attachment_tag("##sent-attachment", ImVec2(chip_x, chip_y), width,
+                              attachment_labels[index], false, true, true, icon_texture);
+        ImGui::PopID();
+        chip_x += width + attachment_tag_spacing;
+    }
+    if (!message.content.empty()) {
+        ImGui::SetCursorScreenPos(ImVec2(bubble_min.x + horizontal_padding,
+            bubble_min.y + vertical_padding + attachment_height + content_gap));
+        render_wrapped_selectable_text(message.content, max_text_width);
+    }
     ImGui::SetCursorScreenPos(row_pos);
     ImGui::Dummy(ImVec2(available_width, bubble_height));
 }
@@ -1091,6 +1340,8 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         const std::filesystem::path project_root = project.directory.lexically_normal();
         if (panel_state.file_references_root != project_root) {
             panel_state.file_references.clear();
+            panel_state.attachments.clear();
+            panel_state.attachment_error.clear();
             panel_state.file_references_root = project_root;
         }
         if (panel_state.file_picker_open && panel_state.file_picker_root != project_root)
@@ -1099,11 +1350,36 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         constexpr float outer_padding = 8.0f;
         constexpr float input_height = 58.0f;
         constexpr float footer_height = 38.0f;
-        constexpr float composer_height = outer_padding + input_height + footer_height;
         constexpr float max_chat_width = 960.0f;
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
         const float available_width = ImGui::GetContentRegionAvail().x;
         const float chat_width = std::min(available_width, max_chat_width);
+        const float tag_area_width = std::max(1.0f, chat_width - outer_padding * 2.0f);
+        std::size_t attachment_rows = 0;
+        float attachment_row_width = 0.0f;
+        for (const FileAttachment& attachment : panel_state.attachments) {
+            const std::string label = attachment_tag_label(
+                attachment.filename, tag_area_width, true);
+            const float width = attachment_tag_width(label, true);
+            if (attachment_rows == 0) {
+                attachment_rows = 1;
+            } else if (attachment_row_width > 0.0f &&
+                       attachment_row_width + attachment_tag_spacing + width > tag_area_width) {
+                ++attachment_rows;
+                attachment_row_width = 0.0f;
+            }
+            if (attachment_row_width > 0.0f)
+                attachment_row_width += attachment_tag_spacing;
+            attachment_row_width += width;
+        }
+        const float attachment_tags_height = attachment_rows == 0 ? 0.0f
+            : attachment_rows * attachment_tag_height +
+              (attachment_rows - 1) * attachment_tag_row_spacing + 6.0f;
+        const float attachment_error_height = panel_state.attachment_error.empty() ? 0.0f
+            : ImGui::GetFontSize() + 6.0f;
+        const float attachment_row_height = attachment_tags_height + attachment_error_height;
+        const float composer_height = outer_padding + attachment_row_height +
+                                      input_height + footer_height;
         const float chat_offset = (available_width - chat_width) * 0.5f;
         const float chat_x = ImGui::GetCursorPosX() + chat_offset;
         const float available_height = ImGui::GetContentRegionAvail().y;
@@ -1120,12 +1396,14 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         has_chat_component = false;
         const bool was_at_bottom = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f;
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+        const std::vector<ChatAttachment>* citation_attachments = nullptr;
         for (std::size_t message_index = 0; message_index < thread.messages.size(); ++message_index) {
             const ChatMessage& message = thread.messages[message_index];
             ImGui::PushID(static_cast<int>(message_index));
             ImGui::BeginGroup();
             if (message.role == ChatMessageRole::User) {
-                render_user_message(message);
+                citation_attachments = message.attachments.empty() ? nullptr : &message.attachments;
+                render_user_message(message, panel_state.attachment_icon_texture);
             } else {
                 if (!message.reasoning.empty())
                     render_reasoning(message.reasoning);
@@ -1141,7 +1419,8 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                             render_tool_activity(segment.tool, monospace_font);
                             ImGui::PopID();
                         } else if (!segment.text.empty()) {
-                            render_markdown_text(markdown, segment.text);
+                            render_markdown_text(markdown,
+                                renderable_assistant_text(segment.text, citation_attachments));
                         }
                     }
                 } else {
@@ -1150,7 +1429,8 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                         tool.command = activity;
                         render_tool_activity(tool, monospace_font);
                     }
-                    render_markdown_text(markdown, message.content);
+                    render_markdown_text(markdown,
+                        renderable_assistant_text(message.content, citation_attachments));
                 }
             }
             ImGui::EndGroup();
@@ -1198,7 +1478,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         ImGui::SetCursorPosX(chat_x);
         const ImVec2 input_pos = ImGui::GetCursorScreenPos();
         const float full_width = chat_width;
-        constexpr float total_height = composer_height;
+        const float total_height = composer_height;
         const float send_size = 32.0f;
         const ImVec2 frame_max(input_pos.x + full_width, input_pos.y + total_height);
         ImDrawList* draw_list = ImGui::GetWindowDrawList();
@@ -1206,7 +1486,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                                  ImGui::GetColorU32(ImGuiCol_FrameBg), 6.0f);
         draw_list->AddRect(input_pos, frame_max,
                            ImGui::GetColorU32(ImGuiCol_Border), 6.0f);
-        const float divider_y = input_pos.y + outer_padding + input_height;
+        const float divider_y = input_pos.y + outer_padding + attachment_row_height + input_height;
         draw_list->AddLine(ImVec2(input_pos.x + 1.0f, divider_y),
                            ImVec2(frame_max.x - 1.0f, divider_y),
                            ImGui::GetColorU32(ImGuiCol_Border), 1.0f);
@@ -1215,8 +1495,39 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        if (!panel_state.attachments.empty()) {
+            float tag_x = input_pos.x + outer_padding;
+            float tag_y = input_pos.y + outer_padding;
+            for (std::size_t i = 0; i < panel_state.attachments.size(); ++i) {
+                const std::string label = attachment_tag_label(
+                    panel_state.attachments[i].filename, tag_area_width, true);
+                const float width = attachment_tag_width(label, true);
+                if (tag_x > input_pos.x + outer_padding &&
+                    tag_x + width > frame_max.x - outer_padding) {
+                    tag_x = input_pos.x + outer_padding;
+                    tag_y += attachment_tag_height + attachment_tag_row_spacing;
+                }
+                ImGui::PushID(static_cast<int>(i));
+                const bool remove = render_attachment_tag(
+                    "##composer-attachment", ImVec2(tag_x, tag_y),
+                    width, label, true, false, false,
+                    panel_state.attachment_icon_texture);
+                ImGui::PopID();
+                if (remove) {
+                    panel_state.attachments.erase(panel_state.attachments.begin() + i);
+                    break;
+                }
+                tag_x += width + attachment_tag_spacing;
+            }
+        }
+        if (!panel_state.attachment_error.empty()) {
+            ImGui::SetCursorScreenPos(ImVec2(input_pos.x + outer_padding,
+                input_pos.y + outer_padding + attachment_tags_height));
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s",
+                               panel_state.attachment_error.c_str());
+        }
         ImGui::SetCursorScreenPos(ImVec2(input_pos.x + outer_padding,
-                                         input_pos.y + outer_padding));
+                                         input_pos.y + outer_padding + attachment_row_height));
         if (panel_state.restore_input_focus) {
             ImGui::SetKeyboardFocusHere();
             panel_state.restore_input_focus = false;
@@ -1274,8 +1585,8 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             const ImVec2 mouse = ImGui::GetIO().MousePos;
             const bool over_input = mouse.x >= input_pos.x + outer_padding &&
                 mouse.x < input_pos.x + full_width - outer_padding &&
-                mouse.y >= input_pos.y + outer_padding &&
-                mouse.y < input_pos.y + outer_padding + input_height;
+                mouse.y >= input_pos.y + outer_padding + attachment_row_height &&
+                mouse.y < input_pos.y + outer_padding + attachment_row_height + input_height;
             const float popup_height = file_picker_height(panel_state);
             const ImVec2 popup_min(input_pos.x,
                                    input_pos.y - popup_height - outer_padding);
@@ -1291,13 +1602,14 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                               divider_y + (footer_height - send_size) * 0.5f);
         const float selector_y = divider_y + (footer_height - ImGui::GetFrameHeight()) * 0.5f;
         const float selector_x = input_pos.x + outer_padding;
-        const float selector_available = std::max(0.0f, send_pos.x - selector_x - 12.0f);
+        const float controls_x = selector_x;
+        const float selector_available = std::max(0.0f, send_pos.x - controls_x - 50.0f);
         const float model_width = std::min(190.0f, selector_available * 0.48f);
         const float reasoning_width = std::min(140.0f, std::max(0.0f, selector_available * 0.28f));
         const auto active_model = std::find_if(provider->models.begin(), provider->models.end(),
             [&](const ModelOption& model) { return model.id == selected_model; });
         if (active_model != provider->models.end() && model_width >= 60.0f) {
-            ImGui::SetCursorScreenPos(ImVec2(selector_x, selector_y));
+            ImGui::SetCursorScreenPos(ImVec2(controls_x, selector_y));
             ImGui::SetNextItemWidth(model_width);
             ImGui::BeginDisabled(is_generating);
             if (ImGui::BeginCombo("##model-selector", active_model->name.c_str())) {
@@ -1335,7 +1647,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             if (reasoning_width >= 60.0f) {
                 const std::string effort_label = selected_reasoning_effort.empty()
                     ? "Default" : selected_reasoning_effort;
-                ImGui::SetCursorScreenPos(ImVec2(selector_x + model_width + 8.0f, selector_y));
+                ImGui::SetCursorScreenPos(ImVec2(controls_x + model_width + 8.0f, selector_y));
                 ImGui::SetNextItemWidth(reasoning_width);
                 if (ImGui::BeginCombo("##reasoning-selector", effort_label.c_str())) {
                     if (reasoning_model == provider->models.end() || reasoning_model->reasoning_efforts.empty()) {
@@ -1370,7 +1682,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                     const char* permission_label = selected_permission == nullptr
                         ? "Default" : selected_permission->name.c_str();
                     ImGui::SetCursorScreenPos(ImVec2(
-                        selector_x + model_width + 8.0f + reasoning_width + 8.0f,
+                        controls_x + model_width + 8.0f + reasoning_width + 8.0f,
                         selector_y));
                     ImGui::SetNextItemWidth(permission_width);
                     ImGui::BeginDisabled(is_generating);
@@ -1391,6 +1703,26 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                     ImGui::EndDisabled();
                 }
             }
+        }
+        const ImVec2 attach_pos(send_pos.x - 42.0f, selector_y);
+        ImGui::SetCursorScreenPos(attach_pos);
+        const bool attach_clicked = ImGui::Button("##attach-files",
+                                                   ImVec2(30.0f, ImGui::GetFrameHeight()));
+        const ImVec2 attach_min = ImGui::GetItemRectMin();
+        const ImVec2 attach_max = ImGui::GetItemRectMax();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Attach files");
+        if (panel_state.paperclip_icon_texture != 0) {
+            const ImVec2 icon_min((attach_min.x + attach_max.x - 14.0f) * 0.5f,
+                                  (attach_min.y + attach_max.y - 16.0f) * 0.5f);
+            draw_list->AddImage(
+                ImTextureRef(static_cast<ImTextureID>(panel_state.paperclip_icon_texture)),
+                icon_min, ImVec2(icon_min.x + 14.0f, icon_min.y + 16.0f),
+                ImVec2(0, 0), ImVec2(1, 1), ImGui::GetColorU32(ImGuiCol_Text));
+        }
+        if (attach_clicked) {
+            panel_state.attachment_error.clear();
+            choose_attachments(panel_state);
         }
         ImGui::SetCursorScreenPos(send_pos);
         const bool send_clicked = ImGui::InvisibleButton("##send-message", ImVec2(send_size, send_size));
@@ -1426,7 +1758,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             is_generating = false;
             active_turn_id = 0;
         } else if (!is_generating && provider->availability == ProviderAvailability::Available &&
-                   (enter || send_clicked) && !message_input.empty()) {
+                   (enter || send_clicked) && (!message_input.empty() || !panel_state.attachments.empty())) {
             if (state.selected_thread > 0) {
                 std::rotate(threads.begin(),
                             threads.begin() + state.selected_thread,
@@ -1436,11 +1768,18 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             ChatThread& destination = threads[state.selected_thread];
             std::string prompt = std::move(message_input);
             message_input.clear();
-            destination.messages.push_back({ChatMessageRole::User, prompt, {}, {}, {}});
+            ChatMessage user_message{ChatMessageRole::User, prompt, {}, {}, {}, {}};
+            for (const FileAttachment& attachment : panel_state.attachments) {
+                user_message.attachments.push_back({
+                    attachment.filename, attachment.media_type, attachment.content.size()});
+            }
+            destination.messages.push_back(std::move(user_message));
             TurnRequest request;
             request.conversation_id = destination.id;
             request.prompt = std::move(prompt);
             request.history = destination.messages;
+            request.attachments = std::move(panel_state.attachments);
+            panel_state.attachments.clear();
             for (const FileReference& reference : panel_state.file_references) {
                 const std::string token = "@" + reference.path.generic_string();
                 if (request.prompt.find(token) != std::string::npos)
@@ -1455,7 +1794,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             const Result submitted = provider->submit(provider, std::move(request));
             if (submitted.status == ResultStatus::Error) {
                 destination.messages.push_back(
-                    {ChatMessageRole::Assistant, std::string(submitted.error), {}, {}, {}});
+                    {ChatMessageRole::Assistant, std::string(submitted.error), {}, {}, {}, {}});
             } else {
                 active_turn_id = next_turn_id - 1;
                 is_generating = true;

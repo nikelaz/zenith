@@ -7,6 +7,8 @@
 #include "ui-system.h"
 #include "card.h"
 #include "application-icon.h"
+#include "file-attachment-icon.h"
+#include "paperclip-icon.h"
 #include "chat-panel.h"
 #include "dock-area.h"
 #include "imgui.h"
@@ -95,7 +97,7 @@ ImFont* load_bundled_font(const char* family, const char* filename, bool pixel_s
     return ImGui::GetIO().Fonts->AddFontFromFileTTF(path.string().c_str(), 16.0f);
 }
 
-unsigned int create_menu_icon_texture() {
+unsigned int create_icon_texture(int width, int height, const unsigned char* pixels) {
     unsigned int texture = 0;
     glGenTextures(1, &texture);
     if (texture == 0)
@@ -107,9 +109,8 @@ unsigned int create_menu_icon_texture() {
     constexpr GLint clamp_to_edge = 0x812F;
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, clamp_to_edge);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, clamp_to_edge);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, application_icon::width,
-                 application_icon::height, 0, GL_RGBA, GL_UNSIGNED_BYTE,
-                 application_icon::pixels);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA,
+                 GL_UNSIGNED_BYTE, pixels);
     glBindTexture(GL_TEXTURE_2D, 0);
     return texture;
 }
@@ -341,7 +342,13 @@ Result UISystem::init() {
         return result_error("Failed to initialize Dear ImGui OpenGL 3 backend");
     }
 
-    m_menu_icon_texture = create_menu_icon_texture();
+    m_menu_icon_texture = create_icon_texture(application_icon::width,
+        application_icon::height, application_icon::pixels);
+    m_chat_panel_state.attachment_icon_texture = create_icon_texture(
+        file_attachment_icon::width, file_attachment_icon::height,
+        file_attachment_icon::pixels);
+    m_chat_panel_state.paperclip_icon_texture = create_icon_texture(
+        paperclip_icon::width, paperclip_icon::height, paperclip_icon::pixels);
     m_initialized = true;
 
     return result_ok();
@@ -357,6 +364,14 @@ void UISystem::deinit() {
     if (m_menu_icon_texture != 0) {
         glDeleteTextures(1, &m_menu_icon_texture);
         m_menu_icon_texture = 0;
+    }
+    if (m_chat_panel_state.attachment_icon_texture != 0) {
+        glDeleteTextures(1, &m_chat_panel_state.attachment_icon_texture);
+        m_chat_panel_state.attachment_icon_texture = 0;
+    }
+    if (m_chat_panel_state.paperclip_icon_texture != 0) {
+        glDeleteTextures(1, &m_chat_panel_state.paperclip_icon_texture);
+        m_chat_panel_state.paperclip_icon_texture = 0;
     }
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
@@ -417,11 +432,11 @@ void UISystem::render_frame_to_backbuffer() {
                 if (event.kind == EventKind::ReasoningSummaryDelta ||
                     event.kind == EventKind::AssistantReasoningDelta) {
                     if (messages.empty() || messages.back().role != ChatMessageRole::Assistant)
-                        messages.push_back({ChatMessageRole::Assistant, {}, {}, {}, {}});
+                        messages.push_back({ChatMessageRole::Assistant, {}, {}, {}, {}, {}});
                     messages.back().reasoning += event.text;
                 } else {
                     if (messages.empty() || messages.back().role != ChatMessageRole::Assistant)
-                        messages.push_back({ChatMessageRole::Assistant, {}, {}, {}, {}});
+                        messages.push_back({ChatMessageRole::Assistant, {}, {}, {}, {}, {}});
                     ChatMessage& message = messages.back();
                     auto segment = message.segments.end();
                     if (!event.item_id.empty()) {
@@ -465,7 +480,7 @@ void UISystem::render_frame_to_backbuffer() {
                 }
             } else if (event.kind == EventKind::AssistantTextDelta) {
                 if (messages.empty() || messages.back().role != ChatMessageRole::Assistant)
-                    messages.push_back({ChatMessageRole::Assistant, {}, {}, {}, {}});
+                    messages.push_back({ChatMessageRole::Assistant, {}, {}, {}, {}, {}});
                 ChatMessage& message = messages.back();
                 message.content += event.text;
                 if (message.segments.empty() || message.segments.back().kind != ChatSegment::Kind::Text)
@@ -476,7 +491,7 @@ void UISystem::render_frame_to_backbuffer() {
                     m_chat_panel_state.is_generating = false;
                     m_chat_panel_state.active_turn_id = 0;
                 }
-                messages.push_back({ChatMessageRole::Assistant, event.text, {}, {}, {}});
+                messages.push_back({ChatMessageRole::Assistant, event.text, {}, {}, {}, {}});
             } else if (event.kind == EventKind::TurnCompleted) {
                 if (event.turn_id == m_chat_panel_state.active_turn_id) {
                     m_chat_panel_state.is_generating = false;

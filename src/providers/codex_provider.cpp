@@ -255,6 +255,36 @@ Json codex_prompt_content(const TurnRequest* request) {
                          reference.path.generic_string() + ". Read it if relevant."},
         });
     }
+    static constexpr char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    for (const FileAttachment& attachment : request->attachments) {
+        if (attachment.media_type.rfind("image/", 0) == 0) {
+            std::string encoded;
+            for (std::size_t i = 0; i < attachment.content.size(); i += 3) {
+                const std::uint32_t a = attachment.content[i];
+                const std::uint32_t b = i + 1 < attachment.content.size() ? attachment.content[i + 1] : 0;
+                const std::uint32_t c = i + 2 < attachment.content.size() ? attachment.content[i + 2] : 0;
+                const std::uint32_t value = (a << 16) | (b << 8) | c;
+                encoded.push_back(alphabet[(value >> 18) & 63]);
+                encoded.push_back(alphabet[(value >> 12) & 63]);
+                encoded.push_back(i + 1 < attachment.content.size() ? alphabet[(value >> 6) & 63] : '=');
+                encoded.push_back(i + 2 < attachment.content.size() ? alphabet[value & 63] : '=');
+            }
+            content.push_back({{"type", "text"}, {"text", "Attached image: " + attachment.filename}});
+            content.push_back({{"type", "image"},
+                               {"url", "data:" + attachment.media_type + ";base64," + encoded}});
+        } else if (attachment.media_type.rfind("text/", 0) == 0 ||
+                   attachment.media_type == "application/json") {
+            content.push_back({{"type", "text"},
+                {"text", "Attached file " + attachment.filename + ":\n" +
+                    std::string(attachment.content.begin(), attachment.content.end())}});
+        } else {
+            content.push_back({{"type", "text"},
+                {"text", "The user attached " + attachment.filename +
+                    " at " + attachment.path.string() +
+                    ". Read this document from disk if relevant."}});
+        }
+    }
     return content;
 }
 

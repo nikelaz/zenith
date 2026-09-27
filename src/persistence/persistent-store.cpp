@@ -99,6 +99,36 @@ std::vector<ChatSegment> deserialize_segments(const std::string& serialized) {
     }
     return result;
 }
+
+Json serialize_attachments(const std::vector<ChatAttachment>& attachments) {
+    Json result = Json::array();
+    for (const ChatAttachment& attachment : attachments) {
+        result.push_back({{"filename", attachment.filename},
+                          {"media_type", attachment.media_type},
+                          {"size_bytes", attachment.size_bytes}});
+    }
+    return result;
+}
+
+std::vector<ChatAttachment> deserialize_attachments(const std::string& serialized) {
+    std::vector<ChatAttachment> result;
+    try {
+        const Json values = Json::parse(serialized);
+        if (!values.is_array())
+            return result;
+        for (const Json& value : values) {
+            if (!value.is_object())
+                continue;
+            ChatAttachment attachment;
+            attachment.filename = value.value("filename", std::string{});
+            attachment.media_type = value.value("media_type", std::string{});
+            attachment.size_bytes = value.value("size_bytes", std::size_t{0});
+            result.push_back(std::move(attachment));
+        }
+    } catch (...) {
+    }
+    return result;
+}
 }
 
 PersistentStore::~PersistentStore() {
@@ -156,6 +186,7 @@ Result PersistentStore::open(const std::string& path) {
         "  content TEXT NOT NULL,"
         "  reasoning TEXT NOT NULL DEFAULT '',"
         "  segments TEXT NOT NULL DEFAULT '[]',"
+        "  attachments TEXT NOT NULL DEFAULT '[]',"
         "  PRIMARY KEY(thread_position, position)"
         ");"
         "CREATE TABLE IF NOT EXISTS settings ("
@@ -174,6 +205,13 @@ Result PersistentStore::open(const std::string& path) {
     if (!has_column(m_database, "messages", "segments")) {
         Result migration = execute("ALTER TABLE messages ADD COLUMN segments TEXT NOT NULL DEFAULT '[]'",
                                    "Failed to add message segment storage");
+        if (migration.status == ResultStatus::Error)
+            return migration;
+    }
+    if (!has_column(m_database, "messages", "attachments")) {
+        Result migration = execute(
+            "ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]'",
+            "Failed to add message attachment storage");
         if (migration.status == ResultStatus::Error)
             return migration;
     }
@@ -260,7 +298,7 @@ Result PersistentStore::load(ApplicationState& state) {
                  "SELECT position, title, description, thread_id, project_position FROM threads ORDER BY position",
                  thread_statement) ||
         !prepare(m_database,
-                 "SELECT role, content, reasoning, segments FROM messages WHERE thread_position = ? ORDER BY position",
+                 "SELECT role, content, reasoning, segments, attachments FROM messages WHERE thread_position = ? ORDER BY position",
                  message_statement)) {
         return fail("Failed to load saved projects and threads");
     }
@@ -307,9 +345,11 @@ Result PersistentStore::load(ApplicationState& state) {
                 {},
                 {},
                 {},
+                {},
             };
             message.reasoning = column_text(message_statement.get(), 2);
             message.segments = deserialize_segments(column_text(message_statement.get(), 3));
+            message.attachments = deserialize_attachments(column_text(message_statement.get(), 4));
             thread.messages.push_back(std::move(message));
         }
         if (message_result != SQLITE_DONE) {
@@ -391,7 +431,7 @@ Result PersistentStore::save(const ApplicationState& state) {
                  "INSERT INTO threads(position, title, description, thread_id, project_position) VALUES(?, ?, ?, ?, ?)",
                  thread_statement) ||
         !prepare(m_database,
-                 "INSERT INTO messages(thread_position, position, role, content, reasoning, segments) VALUES(?, ?, ?, ?, ?, ?)",
+                 "INSERT INTO messages(thread_position, position, role, content, reasoning, segments, attachments) VALUES(?, ?, ?, ?, ?, ?, ?)",
                  message_statement) ||
         !prepare(m_database,
                  "INSERT INTO settings(name, value) VALUES('selected_project', ?) "
@@ -436,6 +476,8 @@ Result PersistentStore::save(const ApplicationState& state) {
                 sqlite3_bind_text(message_statement.get(), 5, message.reasoning.c_str(), -1, SQLITE_TRANSIENT);
                 const std::string segments = serialize_segments(message.segments).dump();
                 sqlite3_bind_text(message_statement.get(), 6, segments.c_str(), -1, SQLITE_TRANSIENT);
+                const std::string attachments = serialize_attachments(message.attachments).dump();
+                sqlite3_bind_text(message_statement.get(), 7, attachments.c_str(), -1, SQLITE_TRANSIENT);
                 if (sqlite3_step(message_statement.get()) != SQLITE_DONE)
                     return rollback(fail("Failed to save message"));
                 sqlite3_reset(message_statement.get());

@@ -17,7 +17,11 @@ struct ChatPanelState {
     TurnId active_turn_id = 0;
     TurnId next_turn_id = 1;
     ImFont* monospace_font = nullptr;
+    unsigned int attachment_icon_texture = 0;
+    unsigned int paperclip_icon_texture = 0;
     std::vector<FileReference> file_references;
+    std::vector<FileAttachment> attachments;
+    std::string attachment_error;
     std::filesystem::path file_references_root;
     bool file_picker_open = false;
     bool restore_input_focus = false;

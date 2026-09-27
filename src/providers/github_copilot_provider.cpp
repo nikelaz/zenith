@@ -225,7 +225,8 @@ bool wait_for_response(ChildProcess* process, int request_id, StreamContext* con
     }
 }
 
-bool initialize_copilot(ChildProcess* process, StreamContext* context, std::string* error) {
+bool initialize_copilot(ChildProcess* process, StreamContext* context, Json* response,
+                        std::string* error) {
     const Json initialize = {
         {"jsonrpc", "2.0"},
         {"id", 1},
@@ -235,7 +236,7 @@ bool initialize_copilot(ChildProcess* process, StreamContext* context, std::stri
                     {"clientInfo", {{"name", "Zenith"}, {"version", "0.1.0"}}}}},
     };
     return write_message(process->input, initialize) &&
-           wait_for_response(process, 1, context, nullptr, error);
+           wait_for_response(process, 1, context, response, error);
 }
 
 std::filesystem::path session_working_directory(const TurnRequest* request,
@@ -341,7 +342,7 @@ bool discover_copilot_models(CopilotState* state, ProviderRuntime* runtime,
             child_process_terminate(&process);
     }
 
-    bool success = initialize_copilot(&process, &context, &error);
+    bool success = initialize_copilot(&process, &context, nullptr, &error);
     std::error_code path_error;
     std::filesystem::path cwd = std::filesystem::current_path(path_error);
     if (path_error) {
@@ -397,7 +398,7 @@ std::string conversation_prompt(const TurnRequest* request) {
     return prompt;
 }
 
-Json copilot_prompt_content(const TurnRequest* request) {
+Json copilot_prompt_content(const TurnRequest* request, bool embedded_context) {
     Json content = Json::array();
     content.push_back({{"type", "text"}, {"text", conversation_prompt(request)}});
     for (const FileReference& reference : request->file_references) {
@@ -406,6 +407,54 @@ Json copilot_prompt_content(const TurnRequest* request) {
             {"text", "The user referenced this workspace-relative file: " +
                          reference.path.generic_string() + ". Read it if relevant."},
         });
+    }
+    static constexpr char alphabet[] =
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    for (std::size_t index = 0; index < request->attachments.size(); ++index) {
+        const FileAttachment& attachment = request->attachments[index];
+        if (attachment.media_type.rfind("image/", 0) == 0) {
+            std::string encoded;
+            for (std::size_t i = 0; i < attachment.content.size(); i += 3) {
+                const std::uint32_t a = attachment.content[i];
+                const std::uint32_t b = i + 1 < attachment.content.size() ? attachment.content[i + 1] : 0;
+                const std::uint32_t c = i + 2 < attachment.content.size() ? attachment.content[i + 2] : 0;
+                const std::uint32_t value = (a << 16) | (b << 8) | c;
+                encoded.push_back(alphabet[(value >> 18) & 63]);
+                encoded.push_back(alphabet[(value >> 12) & 63]);
+                encoded.push_back(i + 1 < attachment.content.size() ? alphabet[(value >> 6) & 63] : '=');
+                encoded.push_back(i + 2 < attachment.content.size() ? alphabet[value & 63] : '=');
+            }
+            content.push_back({{"type", "image"}, {"data", encoded}, {"mimeType", attachment.media_type}});
+        } else if (attachment.media_type.rfind("text/", 0) == 0 ||
+                   attachment.media_type == "application/json") {
+            content.push_back({{"type", "text"},
+                {"text", "Attached file " + attachment.filename + ":\n" +
+                    std::string(attachment.content.begin(), attachment.content.end())}});
+        } else if (embedded_context) {
+            std::string encoded;
+            for (std::size_t i = 0; i < attachment.content.size(); i += 3) {
+                const std::uint32_t a = attachment.content[i];
+                const std::uint32_t b = i + 1 < attachment.content.size() ? attachment.content[i + 1] : 0;
+                const std::uint32_t c = i + 2 < attachment.content.size() ? attachment.content[i + 2] : 0;
+                const std::uint32_t value = (a << 16) | (b << 8) | c;
+                encoded.push_back(alphabet[(value >> 18) & 63]);
+                encoded.push_back(alphabet[(value >> 12) & 63]);
+                encoded.push_back(i + 1 < attachment.content.size() ? alphabet[(value >> 6) & 63] : '=');
+                encoded.push_back(i + 2 < attachment.content.size() ? alphabet[value & 63] : '=');
+            }
+            content.push_back({{"type", "text"}, {"text", "Attached document: " + attachment.filename}});
+            content.push_back({
+                {"type", "resource"},
+                {"resource", {{"uri", "attachment://zenith/" +
+                                      std::to_string(request->turn_id) + "/" +
+                                      std::to_string(index)},
+                              {"mimeType", attachment.media_type}, {"blob", encoded}}}});
+        } else {
+            content.push_back({{"type", "text"},
+                {"text", "The user attached " + attachment.filename + " at " +
+                    attachment.path.string() +
+                    ". Read this file from disk if relevant."}});
+        }
     }
     return content;
 }
@@ -431,7 +480,14 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
 
     StreamContext context{runtime, request};
     std::string error;
-    bool success = initialize_copilot(&process, &context, &error);
+    bool embedded_context = false;
+    Json initialize_response;
+    bool success = initialize_copilot(&process, &context, &initialize_response, &error);
+    if (success) {
+        const Json capabilities = initialize_response.value("result", Json::object())
+            .value("agentCapabilities", Json::object()).value("promptCapabilities", Json::object());
+        embedded_context = capabilities.value("embeddedContext", false);
+    }
     std::error_code path_error;
     const std::filesystem::path cwd = session_working_directory(request, &path_error);
     if (path_error) {
@@ -463,7 +519,7 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
             {"id", 3},
             {"method", "session/prompt"},
             {"params", {{"sessionId", session_id},
-                        {"prompt", copilot_prompt_content(request)}}},
+                        {"prompt", copilot_prompt_content(request, embedded_context)}}},
         };
         Json response;
         success = write_message(process.input, prompt) &&

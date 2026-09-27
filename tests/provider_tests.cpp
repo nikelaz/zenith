@@ -193,16 +193,16 @@ TEST(PersistentStore, SavesAndLoadsProjectsThreadsMessagesAndSelection) {
     ApplicationState saved;
     saved.projects = {
         {"/work/one", true, {{"First", "first description", "thread-1", {
-            {ChatMessageRole::User, "question", "", {}, {}},
+            {ChatMessageRole::User, "question", "", {}, {}, {}},
             {ChatMessageRole::Assistant, "answer", "private reasoning", {}, {
                 {ChatSegment::Kind::Text, "before tool", {}},
                 {ChatSegment::Kind::Tool, {}, {"tool-1", "shell", "echo hi", "{}",
                     "/work/one", "hi\n", "completed", 0, 12, true, true}},
                 {ChatSegment::Kind::Text, "after tool", {}},
-            }},
+            }, {}},
         }}}},
         {"/work/two", false, {{"Second", "second description", "thread-2", {
-            {ChatMessageRole::Assistant, "other project", "", {}, {}},
+            {ChatMessageRole::Assistant, "other project", "", {}, {}, {}},
         }}}},
     };
     saved.selected_project = 1;
