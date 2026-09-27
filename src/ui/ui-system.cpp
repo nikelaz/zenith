@@ -346,6 +346,9 @@ Result UISystem::init() {
 }
 
 void UISystem::deinit() {
+    if (m_main_context == nullptr)
+        return;
+
     close_settings_window();
     glfwMakeContextCurrent(m_window);
     ImGui::SetCurrentContext(m_main_context);

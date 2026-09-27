@@ -15,6 +15,10 @@ static void glfw_error_callback(int code, const char* description) {
     tinyfd_messageBox("Zenith - GLFW error", message.c_str(), "ok", "error", 1);
 }
 
+Application::~Application() {
+    deinit();
+}
+
 Result Application::init() {
     Result glfw_init_result = window_init();
     if (glfw_init_result.status == ResultStatus::Error) {
@@ -25,7 +29,7 @@ Result Application::init() {
         std::error_code path_error;
         m_state.projects.front().directory = std::filesystem::current_path(path_error);
         if (path_error) {
-            window_deinit();
+            deinit();
             return result_error("Failed to determine the initial project directory: " +
                                 path_error.message());
         }
@@ -33,15 +37,13 @@ Result Application::init() {
 
     Result state_result = m_state_store.open("Zenith.sqlite3");
     if (state_result.status == ResultStatus::Error) {
-        m_state_store.close();
-        window_deinit();
+        deinit();
         return state_result;
     }
 
     state_result = m_state_store.load(m_state);
     if (state_result.status == ResultStatus::Error) {
-        m_state_store.close();
-        window_deinit();
+        deinit();
         return state_result;
     }
 
@@ -50,26 +52,15 @@ Result Application::init() {
     for (ProviderPtr& provider : m_providers) {
         Result provider_result = provider->start(provider.get());
         if (provider_result.status == ResultStatus::Error) {
-            m_providers.clear();
-            m_state_store.close();
-            window_deinit();
+            deinit();
             return provider_result;
         }
     }
     m_ui.emplace(m_window, m_state, m_providers);
 
-    if (!m_ui) {
-        m_providers.clear();
-
-        window_deinit();
-        return result_error("UI System does not have a value unexpectedly");
-    }
-
     Result ui_init_result = m_ui->init();
     if (ui_init_result.status == ResultStatus::Error) {
-        m_providers.clear();
-        m_state_store.close();
-        window_deinit();
+        deinit();
         return ui_init_result;
     }
 
@@ -79,8 +70,9 @@ Result Application::init() {
 }
 
 void Application::deinit() {
-    if (m_initialized && m_ui) {
+    if (m_ui) {
         m_ui->deinit();
+        m_ui.reset();
     }
 
     if (m_initialized) {
@@ -128,8 +120,11 @@ Result Application::window_init() {
 };
 
 void Application::window_deinit() {
-    glfwDestroyWindow(m_window);
-    glfwTerminate();
+    if (m_window != nullptr) {
+        glfwDestroyWindow(m_window);
+        m_window = nullptr;
+        glfwTerminate();
+    }
 }
 
 void Application::run() {

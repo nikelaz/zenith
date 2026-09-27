@@ -15,6 +15,5 @@ int main() {
     }
 
     app.run();
-    app.deinit();
     return 0;
 }

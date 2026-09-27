@@ -14,6 +14,7 @@ public:
     GLFWwindow* m_window = nullptr;
     std::optional<UISystem> m_ui;
 
+    ~Application();
     Result init();
     void deinit();
     void run();
