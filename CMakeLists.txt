@@ -39,6 +39,12 @@ add_subdirectory(third_party/sqlite3 EXCLUDE_FROM_ALL)
 
 add_subdirectory(third_party/googletest EXCLUDE_FROM_ALL)
 
+if(WIN32)
+    set(CHILD_PROCESS_SOURCE src/process/child-process-win32.cpp)
+else()
+    set(CHILD_PROCESS_SOURCE src/process/child-process-posix.cpp)
+endif()
+
 add_library(imgui STATIC
     third_party/imgui/imgui.cpp
     third_party/imgui/imgui_draw.cpp
@@ -64,6 +70,7 @@ target_link_libraries(imgui_md PUBLIC imgui md4c)
 add_executable(Zenith
     src/main.cpp
     src/base/result.cpp
+    ${CHILD_PROCESS_SOURCE}
     src/providers/provider_runtime.cpp
     src/providers/codex_provider.cpp
     src/providers/github_copilot_provider.cpp
@@ -120,7 +127,7 @@ set_project_warnings(Zenith)
 
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(tests tests/provider_tests.cpp src/base/result.cpp src/providers/provider_runtime.cpp src/providers/codex_provider.cpp src/providers/github_copilot_provider.cpp src/providers/fake_provider.cpp)
+    add_executable(tests tests/provider_tests.cpp src/base/result.cpp ${CHILD_PROCESS_SOURCE} src/providers/provider_runtime.cpp src/providers/codex_provider.cpp src/providers/github_copilot_provider.cpp src/providers/fake_provider.cpp)
     target_include_directories(tests PRIVATE third_party/json/include)
     target_link_libraries(tests PRIVATE GTest::gtest_main)
     set_project_warnings(tests)
