@@ -1,3 +1,6 @@
+#ifndef UI_SYSTEM_H
+#define UI_SYSTEM_H
+
 #include "../base/result.h"
 #include "../providers/provider.h"
 #include "../state/application-state.h"
@@ -48,3 +51,5 @@ public:
     void deinit();
     void render_frame_to_backbuffer();
 };
+
+#endif
