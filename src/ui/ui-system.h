@@ -6,6 +6,7 @@
 #include "../state/application-state.h"
 #include "chat-panel.h"
 #include <GLFW/glfw3.h>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -18,6 +19,7 @@ private:
     bool m_open_settings_requested = false;
     bool m_threads_panel_open = true;
     bool m_chat_panel_open = true;
+    bool m_usage_panel_open = true;
     bool m_dragging_title_bar = false;
     GLFWwindow* m_window = nullptr;
     GLFWwindow* m_settings_window = nullptr;
@@ -31,6 +33,8 @@ private:
     ApplicationState& m_state;
     std::vector<ProviderPtr>& m_providers;
     ChatPanelState m_chat_panel_state;
+    std::vector<std::optional<UsageSnapshot>> m_usage_snapshots;
+    std::vector<bool> m_usage_loading;
     unsigned int m_menu_icon_texture = 0;
     int m_title_bar_drag_window_x = 0;
     int m_title_bar_drag_window_y = 0;

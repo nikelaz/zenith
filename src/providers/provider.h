@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -32,6 +33,21 @@ struct ModelOption {
     std::vector<ReasoningOption> reasoning_efforts;
     std::string default_permission_mode;
     std::vector<PermissionOption> permission_modes;
+};
+
+struct UsageMetric {
+    std::string name;
+    std::string value;
+    std::string period;
+    std::optional<double> used;
+    std::optional<double> limit;
+    std::optional<double> remaining;
+    std::string reset_at;
+};
+
+struct UsageSnapshot {
+    std::vector<UsageMetric> metrics;
+    std::string updated_at;
 };
 
 struct FileReference {
@@ -99,6 +115,8 @@ using ProviderSubmitFn = Result (*)(Provider*, TurnRequest);
 using ProviderRespondFn = Result (*)(Provider*, const ProviderRequestId&, ApprovalDecision);
 using ProviderCancelFn = void (*)(Provider*, TurnId);
 using ProviderPollFn = std::vector<Event> (*)(Provider*);
+using ProviderRequestUsageFn = void (*)(Provider*);
+using ProviderPollUsageFn = std::optional<UsageSnapshot> (*)(Provider*);
 using ProviderDestroyFn = void (*)(Provider*);
 using ProviderEventSink = void (*)(void*, const Event*);
 
@@ -111,6 +129,8 @@ struct Provider {
     ProviderCancelFn cancel;
     ProviderPollFn poll_events;
     ProviderDestroyFn destroy;
+    ProviderRequestUsageFn request_usage = nullptr;
+    ProviderPollUsageFn poll_usage = nullptr;
     std::vector<ModelOption> models{};
     std::string default_model{};
     ProviderAvailability availability = ProviderAvailability::Unknown;

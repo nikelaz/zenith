@@ -2,6 +2,7 @@
 #include "../process/child-process.h"
 #include <nlohmann/json.hpp>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 #include <mutex>
 #include <string>
@@ -53,6 +54,14 @@ struct CodexState {
     ProviderAvailability startup_availability = ProviderAvailability::Unknown;
     std::filesystem::path startup_location;
     std::vector<ModelOption> startup_models;
+    std::mutex usage_mutex;
+    std::condition_variable usage_ready;
+    bool usage_requested = false;
+    bool usage_updated = false;
+    bool usage_stopping = false;
+    UsageSnapshot usage_snapshot;
+    std::thread usage_worker;
+    ChildProcess* usage_process = nullptr;
 };
 
 struct StreamContext {
@@ -230,6 +239,185 @@ bool wait_for_response(ChildProcess* process, int request_id, StreamContext* str
         }
         handle_server_message(stream, message);
     }
+}
+
+std::string usage_reset_time(std::int64_t timestamp) {
+    const std::time_t value = static_cast<std::time_t>(timestamp);
+    std::tm time{};
+#ifdef _WIN32
+    if (gmtime_s(&time, &value) != 0)
+        return {};
+#else
+    if (gmtime_r(&value, &time) == nullptr)
+        return {};
+#endif
+    static const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    if (time.tm_mon < 0 || time.tm_mon >= 12)
+        return {};
+    const int hour = time.tm_hour % 12 == 0 ? 12 : time.tm_hour % 12;
+    char formatted[64];
+    std::snprintf(formatted, sizeof(formatted), "%s %d, %d at %d:%02d %s UTC",
+                  months[time.tm_mon], time.tm_mday, time.tm_year + 1900, hour,
+                  time.tm_min, time.tm_hour < 12 ? "AM" : "PM");
+    return formatted;
+}
+
+std::string usage_update_time() {
+    const std::time_t value = std::time(nullptr);
+    std::tm time{};
+#ifdef _WIN32
+    if (gmtime_s(&time, &value) != 0)
+        return {};
+#else
+    if (gmtime_r(&value, &time) == nullptr)
+        return {};
+#endif
+    static const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    if (time.tm_mon < 0 || time.tm_mon >= 12)
+        return {};
+    const int hour = time.tm_hour % 12 == 0 ? 12 : time.tm_hour % 12;
+    char formatted[64];
+    std::snprintf(formatted, sizeof(formatted), "%s %d, %d at %d:%02d %s UTC",
+                  months[time.tm_mon], time.tm_mday, time.tm_year + 1900, hour,
+                  time.tm_min, time.tm_hour < 12 ? "AM" : "PM");
+    return formatted;
+}
+
+UsageSnapshot parse_codex_usage(const Json& result) {
+    UsageSnapshot snapshot;
+    const Json rate_limits = result.value("rateLimits", Json::object());
+    const std::string plan = string_value(rate_limits, "planType");
+    if (!plan.empty()) {
+        UsageMetric metric;
+        metric.name = "Plan";
+        metric.value = plan;
+        snapshot.metrics.push_back(std::move(metric));
+    }
+
+    for (const char* key : {"primary", "secondary"}) {
+        const Json window = rate_limits.value(key, Json::object());
+        if (!window.is_object() || !window.contains("usedPercent") ||
+            !window["usedPercent"].is_number())
+            continue;
+        const double used = window["usedPercent"].get<double>();
+        std::string period = "Usage window";
+        if (window.contains("windowDurationMins") && window["windowDurationMins"].is_number()) {
+            const auto minutes = window["windowDurationMins"].get<std::int64_t>();
+            if (minutes >= 1440 && minutes % 1440 == 0)
+                period = std::to_string(minutes / 1440) + " day" +
+                         (minutes / 1440 == 1 ? "" : "s");
+            else if (minutes >= 60 && minutes % 60 == 0)
+                period = std::to_string(minutes / 60) + " hour" +
+                         (minutes / 60 == 1 ? "" : "s");
+            else if (minutes > 0)
+                period = std::to_string(minutes) + " minutes";
+        }
+        UsageMetric metric;
+        metric.name = std::string(key) == "primary" ? "Primary limit" : "Secondary limit";
+        metric.value = std::to_string(static_cast<int>(100.0 - used)) + "% remaining";
+        metric.period = period;
+        metric.used = used;
+        metric.limit = 100.0;
+        metric.remaining = 100.0 - used;
+        if (window.contains("resetsAt") && window["resetsAt"].is_number_integer())
+            metric.reset_at = usage_reset_time(window["resetsAt"].get<std::int64_t>());
+        snapshot.metrics.push_back(std::move(metric));
+    }
+
+    const Json credits = rate_limits.value("credits", Json::object());
+    if (credits.is_object() && credits.contains("balance")) {
+        UsageMetric metric;
+        metric.name = "Credits";
+        metric.value = credits.value("unlimited", false) ? "Unlimited"
+            : "Balance: " + json_text(credits["balance"]);
+        snapshot.metrics.push_back(std::move(metric));
+    }
+    return snapshot;
+}
+
+bool fetch_codex_usage(CodexState* state, UsageSnapshot* snapshot) {
+    ChildProcess process;
+    if (start_codex_process(&state->options, &process).status == ResultStatus::Error) {
+        child_process_stop(&process);
+        return false;
+    }
+    {
+        std::lock_guard lock(state->active_mutex);
+        state->usage_process = &process;
+        if (state->shutting_down)
+            child_process_terminate(&process);
+    }
+
+    TurnRequest request;
+    StreamContext stream{&state->runtime, &request, false, false, {}};
+    std::string error;
+    const Json initialize = {
+        {"method", "initialize"}, {"id", 1},
+        {"params", {{"clientInfo", {{"name", "Zenith"}, {"title", "Zenith"},
+                                      {"version", "0.1.0"}}}}},
+    };
+    Json response;
+    const bool success = write_message(process.input, initialize) &&
+        wait_for_response(&process, 1, &stream, nullptr, &error) &&
+        write_message(process.input, Json{{"method", "initialized"},
+                                          {"params", Json::object()}}) &&
+        write_message(process.input, Json{{"method", "account/rateLimits/read"}, {"id", 2}}) &&
+        wait_for_response(&process, 2, &stream, &response, &error);
+    if (success)
+        *snapshot = parse_codex_usage(response.value("result", Json::object()));
+
+    {
+        std::lock_guard lock(state->active_mutex);
+        if (state->usage_process == &process)
+            state->usage_process = nullptr;
+    }
+    child_process_stop(&process);
+    return success;
+}
+
+void run_codex_usage(void* context) {
+    CodexState* state = static_cast<CodexState*>(context);
+    for (;;) {
+        {
+            std::unique_lock lock(state->usage_mutex);
+            state->usage_ready.wait(lock, [state] {
+                return state->usage_stopping || state->usage_requested;
+            });
+            if (state->usage_stopping)
+                return;
+            state->usage_requested = false;
+        }
+
+        UsageSnapshot snapshot;
+        if (!fetch_codex_usage(state, &snapshot))
+            continue;
+        std::lock_guard lock(state->usage_mutex);
+        snapshot.updated_at = usage_update_time();
+        state->usage_snapshot = std::move(snapshot);
+        state->usage_updated = true;
+    }
+}
+
+void request_codex_usage(Provider* provider) {
+    CodexState* state = static_cast<CodexState*>(provider->state);
+    {
+        std::lock_guard lock(state->usage_mutex);
+        if (state->usage_stopping)
+            return;
+        state->usage_requested = true;
+    }
+    state->usage_ready.notify_one();
+}
+
+std::optional<UsageSnapshot> poll_codex_usage(Provider* provider) {
+    CodexState* state = static_cast<CodexState*>(provider->state);
+    std::lock_guard lock(state->usage_mutex);
+    if (!state->usage_updated)
+        return std::nullopt;
+    state->usage_updated = false;
+    return state->usage_snapshot;
 }
 
 std::string conversation_prompt(const TurnRequest* request) {
@@ -553,7 +741,15 @@ Result start_codex(Provider* provider) {
         provider_runtime_set_initialize(&state->runtime, initialize_codex);
     else
         provider->availability = ProviderAvailability::Available;
-    return provider_runtime_start(&state->runtime);
+    Result result = provider_runtime_start(&state->runtime);
+    if (result.status == ResultStatus::Error)
+        return result;
+    if (state->options.execute == nullptr) {
+        state->usage_worker = std::thread(run_codex_usage, state);
+        provider->request_usage = request_codex_usage;
+        provider->poll_usage = poll_codex_usage;
+    }
+    return result_ok();
 }
 
 Result submit_codex(Provider* provider, TurnRequest request) {
@@ -613,7 +809,16 @@ void destroy_codex(Provider* provider) {
             child_process_terminate(state->active_process);
         if (state->startup_process != nullptr && child_process_running(state->startup_process))
             child_process_terminate(state->startup_process);
+        if (state->usage_process != nullptr && child_process_running(state->usage_process))
+            child_process_terminate(state->usage_process);
     }
+    {
+        std::lock_guard lock(state->usage_mutex);
+        state->usage_stopping = true;
+    }
+    state->usage_ready.notify_all();
+    if (state->usage_worker.joinable())
+        state->usage_worker.join();
     provider_runtime_shutdown(&state->runtime);
     delete state;
     delete provider;

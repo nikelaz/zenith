@@ -308,10 +308,15 @@ void settings_focus_callback(GLFWwindow* window, int focused) {
 UISystem::UISystem(GLFWwindow* window, ApplicationState& state,
                    std::vector<ProviderPtr>& providers)
     : m_window(window), m_state(state), m_providers(providers),
-      m_chat_panel_state() {
+      m_chat_panel_state(), m_usage_snapshots(providers.size()),
+      m_usage_loading(providers.size(), false) {
     m_chat_panel_state.selected_model = providers.empty()
         ? std::string{} : providers.front()->default_model;
     for (std::size_t index = 0; index < providers.size(); ++index) {
+        if (providers[index]->request_usage != nullptr && providers[index]->poll_usage != nullptr) {
+            providers[index]->request_usage(providers[index].get());
+            m_usage_loading[index] = true;
+        }
         if (providers[index]->name == "GitHub Copilot") {
             m_chat_panel_state.selected_provider = index;
             m_chat_panel_state.selected_model = providers[index]->default_model;
@@ -565,14 +570,17 @@ void UISystem::render_frame_to_backbuffer() {
         if (ImGui::BeginMenu("View")) {
             ImGui::MenuItem("Threads", nullptr, &m_threads_panel_open);
             ImGui::MenuItem("Chat", nullptr, &m_chat_panel_open);
+            ImGui::MenuItem("Usage & Limits", nullptr, &m_usage_panel_open);
             ImGui::Separator();
             if (ImGui::MenuItem("Hide All Panes")) {
                 m_threads_panel_open = false;
                 m_chat_panel_open = false;
+                m_usage_panel_open = false;
             }
             if (ImGui::MenuItem("Show All Panes")) {
                 m_threads_panel_open = true;
                 m_chat_panel_open = true;
+                m_usage_panel_open = true;
             }
             ImGui::EndMenu();
         }
@@ -664,6 +672,75 @@ void UISystem::render_frame_to_backbuffer() {
         render_threads_panel(m_state);
     if (m_chat_panel_open)
         render_chat_panel(m_state, m_providers, m_chat_panel_state);
+
+    for (std::size_t index = 0; index < m_providers.size(); ++index) {
+        Provider* provider = m_providers[index].get();
+        if (provider->poll_usage == nullptr)
+            continue;
+        std::optional<UsageSnapshot> updated = provider->poll_usage(provider);
+        if (updated.has_value()) {
+            m_usage_snapshots[index] = std::move(updated);
+            m_usage_loading[index] = false;
+        }
+    }
+    if (m_usage_panel_open) {
+        ImGui::Begin("Usage & Limits");
+        if (ImGui::Button("Refresh")) {
+            for (std::size_t index = 0; index < m_providers.size(); ++index) {
+                Provider* provider = m_providers[index].get();
+                if (provider->request_usage != nullptr && provider->poll_usage != nullptr) {
+                    provider->request_usage(provider);
+                    m_usage_loading[index] = true;
+                }
+            }
+        }
+        for (std::size_t index = 0; index < m_providers.size(); ++index) {
+            Provider* provider = m_providers[index].get();
+            ImGui::SeparatorText(std::string(provider->name).c_str());
+            if (provider->request_usage == nullptr || provider->poll_usage == nullptr) {
+                ImGui::TextDisabled("Usage information is not available for this provider.");
+                continue;
+            }
+            if (m_usage_loading[index] && !m_usage_snapshots[index].has_value()) {
+                ImGui::TextDisabled("Loading usage information…");
+                continue;
+            }
+            if (!m_usage_snapshots[index].has_value() ||
+                m_usage_snapshots[index]->metrics.empty()) {
+                ImGui::TextDisabled("No usage limits were reported.");
+                continue;
+            }
+            const UsageSnapshot& snapshot = *m_usage_snapshots[index];
+            if (m_usage_loading[index])
+                ImGui::TextDisabled("Refreshing…");
+            for (const UsageMetric& metric : snapshot.metrics) {
+                ImGui::SeparatorText(metric.name.c_str());
+                const bool has_quota = metric.limit.has_value() &&
+                    (metric.remaining.has_value() || metric.used.has_value());
+                if (!metric.value.empty() && !has_quota)
+                    ImGui::TextWrapped("%s", metric.value.c_str());
+                if (has_quota) {
+                    const double remaining = metric.remaining.value_or(
+                        *metric.limit - metric.used.value_or(0.0));
+                    const double fraction = *metric.limit > 0.0
+                        ? std::clamp(remaining / *metric.limit, 0.0, 1.0) : 0.0;
+                    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.16f, 0.16f, 0.16f, 1.0f));
+                    ImGui::PushStyleColor(ImGuiCol_PlotHistogram,
+                                          ImVec4(0.48f, 0.48f, 0.48f, 1.0f));
+                    ImGui::ProgressBar(static_cast<float>(fraction),
+                                       ImVec2(-FLT_MIN, ui_size(4.0f)), "");
+                    ImGui::PopStyleColor(2);
+                }
+                if (!metric.period.empty())
+                    ImGui::TextDisabled("Period: %s", metric.period.c_str());
+                if (!metric.reset_at.empty())
+                    ImGui::TextDisabled("Resets: %s", metric.reset_at.c_str());
+            }
+            if (!snapshot.updated_at.empty())
+                ImGui::TextDisabled("Updated: %s", snapshot.updated_at.c_str());
+        }
+        ImGui::End();
+    }
 
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImVec2 panel_area_max(viewport->WorkPos.x + viewport->WorkSize.x,
