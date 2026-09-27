@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag to build and publish as the release version
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.platform }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+            archive: tar.gz
+          - os: windows-latest
+            platform: windows-x64
+            archive: zip
+    steps:
+      - name: Check out source and submodules
+        uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          submodules: recursive
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux-x64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            libgl1-mesa-dev \
+            libwayland-bin \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxext-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxkbcommon-dev \
+            libxrandr-dev \
+            pkg-config \
+            wayland-protocols
+
+      - name: Configure
+        run: cmake -S . -B build -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Package Linux archive
+        if: matrix.platform == 'linux-x64'
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          package_name="Zenith-${RELEASE_TAG}-linux-x64"
+          package_dir="dist/${package_name}"
+          mkdir -p "${package_dir}/assets"
+          install -m 755 build/Zenith "${package_dir}/Zenith"
+          cp -R assets/fonts assets/icons "${package_dir}/assets/"
+          tar -C dist -czf "dist/${package_name}.tar.gz" "${package_name}"
+
+      - name: Package Windows archive
+        if: matrix.platform == 'windows-x64'
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        shell: pwsh
+        run: |
+          $packageName = "Zenith-$env:RELEASE_TAG-windows-x64"
+          $packageDir = "dist/$packageName"
+          New-Item -ItemType Directory -Path "$packageDir/assets" -Force | Out-Null
+          Copy-Item "build/Release/Zenith.exe" "$packageDir/Zenith.exe"
+          Copy-Item "assets/fonts" "$packageDir/assets" -Recurse
+          Copy-Item "assets/icons" "$packageDir/assets" -Recurse
+          Compress-Archive -Path $packageDir -DestinationPath "dist/$packageName.zip"
+
+      - name: Upload packaged application
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/Zenith-${{ inputs.tag }}-${{ matrix.platform }}.${{ matrix.archive }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged applications
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" dist/*.zip dist/*.tar.gz \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+          else
+            gh release create "$RELEASE_TAG" dist/*.zip dist/*.tar.gz \
+              --repo "$GITHUB_REPOSITORY" \
+              --generate-notes
+          fi
