@@ -316,13 +316,8 @@ void UISystem::render_frame_to_backbuffer() {
             if (event.kind == EventKind::ReasoningSummaryDelta ||
                 event.kind == EventKind::AssistantReasoningDelta ||
                 event.kind == EventKind::ToolActivity) {
-                if (m_progress_conversation_id != event.conversation_id) {
-                    m_progress_conversation_id = event.conversation_id;
-                    m_progress_text.clear();
-                }
                 if (event.kind == EventKind::ReasoningSummaryDelta ||
                     event.kind == EventKind::AssistantReasoningDelta) {
-                    m_progress_text += event.text;
                     if (messages.empty() || messages.back().role != ChatMessageRole::Assistant)
                         messages.push_back({ChatMessageRole::Assistant, {}, {}, {}, {}});
                     messages.back().reasoning += event.text;
@@ -371,8 +366,6 @@ void UISystem::render_frame_to_backbuffer() {
                         segment->tool.completed = true;
                 }
             } else if (event.kind == EventKind::AssistantTextDelta) {
-                m_progress_text.clear();
-                m_progress_conversation_id = event.conversation_id;
                 if (messages.empty() || messages.back().role != ChatMessageRole::Assistant)
                     messages.push_back({ChatMessageRole::Assistant, {}, {}, {}, {}});
                 ChatMessage& message = messages.back();
@@ -381,14 +374,12 @@ void UISystem::render_frame_to_backbuffer() {
                     message.segments.push_back({ChatSegment::Kind::Text, {}, {}});
                 message.segments.back().text += event.text;
             } else if (event.kind == EventKind::TurnFailed) {
-                m_progress_text.clear();
                 if (event.turn_id == m_active_turn_id) {
                     m_is_generating = false;
                     m_active_turn_id = 0;
                 }
                 messages.push_back({ChatMessageRole::Assistant, event.text, {}, {}, {}});
             } else if (event.kind == EventKind::TurnCompleted) {
-                m_progress_text.clear();
                 if (event.turn_id == m_active_turn_id) {
                     m_is_generating = false;
                     m_active_turn_id = 0;
@@ -411,8 +402,7 @@ void UISystem::render_frame_to_backbuffer() {
     render_threads_panel(m_state);
     render_chat_panel(m_state, m_message_input, m_provider, m_selected_model,
                       m_selected_reasoning_effort, m_is_generating, m_active_turn_id,
-                      m_next_turn_id, m_monospace_font, m_progress_text,
-                      m_progress_conversation_id);
+                      m_next_turn_id, m_monospace_font);
 
     prepare_backbuffer();
     render_settings_window();

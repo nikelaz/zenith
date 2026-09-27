@@ -16,6 +16,12 @@ public:
     }
 };
 
+enum class ActivityIcon {
+    Terminal,
+    Tool,
+    Reasoning,
+};
+
 void render_terminal_icon(ImDrawList* draw_list, ImVec2 position, ImU32 color) {
     const ImVec2 first(position.x + 0.5f, position.y + 1.5f);
     const ImVec2 corner(position.x + 4.5f, position.y + 5.0f);
@@ -54,6 +60,19 @@ void render_tool_icon(ImDrawList* draw_list, ImVec2 position, ImU32 color) {
     draw_list->PathLineTo(ImVec2(position.x + 1.8f, position.y + 11.7f));
     draw_list->PathLineTo(ImVec2(position.x + 1.0f, position.y + 11.3f));
     draw_list->PathFillConcave(color);
+}
+
+void render_reasoning_icon(ImDrawList* draw_list, ImVec2 position, ImU32 color) {
+    draw_list->AddLine(ImVec2(position.x + 3.5f, position.y + 2.1f),
+                       ImVec2(position.x + 8.5f, position.y + 2.1f), color, 1.4f);
+    draw_list->AddLine(ImVec2(position.x + 3.2f, position.y + 4.1f),
+                       ImVec2(position.x + 5.4f, position.y + 7.2f), color, 1.4f);
+    draw_list->AddRectFilled(ImVec2(position.x, position.y + 0.7f),
+                             ImVec2(position.x + 4.0f, position.y + 4.8f), color, 1.0f);
+    draw_list->AddRectFilled(ImVec2(position.x + 8.0f, position.y + 0.7f),
+                             ImVec2(position.x + 12.0f, position.y + 4.8f), color, 1.0f);
+    draw_list->AddRectFilled(ImVec2(position.x + 4.7f, position.y + 6.2f),
+                             ImVec2(position.x + 8.7f, position.y + 10.3f), color, 1.0f);
 }
 
 std::string status_label(const ToolActivity& tool, ImVec4* color) {
@@ -102,7 +121,10 @@ std::string elide_tool_title(const std::string& title, float max_width, ImFont* 
     return "...";
 }
 
-void render_tool_activity(const ToolActivity& tool, ImFont* monospace_font) {
+void render_expandable_card(const char* expanded_id_name, const std::string& title,
+                           ActivityIcon icon, const std::string& details,
+                           ImFont* header_font, ImFont* details_font,
+                           const std::string& status, const ImVec4& status_color) {
     constexpr float corner_radius = 5.0f;
     constexpr float header_horizontal_padding = 14.0f;
     constexpr float header_vertical_padding = 4.0f;
@@ -115,45 +137,17 @@ void render_tool_activity(const ToolActivity& tool, ImFont* monospace_font) {
     const float row_height = font_size + header_vertical_padding * 2.0f;
     const ImVec2 card_min = ImGui::GetCursorScreenPos();
     const float available_width = ImGui::GetContentRegionAvail().x;
-    const ImGuiID expanded_id = ImGui::GetID("##tool-expanded");
+    const ImGuiID expanded_id = ImGui::GetID(expanded_id_name);
     ImGuiStorage* storage = ImGui::GetStateStorage();
     bool expanded = storage->GetBool(expanded_id, false);
-
-    std::string title;
-    if (tool.is_terminal || !tool.command.empty())
-        title = tool.command.empty() ? "Terminal" : tool.command;
-    else
-        title = tool.name.empty() ? "Tool" : tool.name;
-    const bool is_terminal = tool.is_terminal || !tool.command.empty();
-    ImFont* default_font = ImGui::GetFont();
-    ImFont* header_font = is_terminal && monospace_font != nullptr
-        ? monospace_font : default_font;
-    ImFont* details_font = monospace_font != nullptr ? monospace_font : default_font;
-    ImVec4 status_color;
-    const std::string status = status_label(tool, &status_color);
-    const ImVec2 status_size = measure_text(header_font, font_size, status);
-    std::string details;
-    if (tool.is_terminal || !tool.command.empty()) {
-        details = tool.command;
-    } else if (!tool.arguments.empty()) {
-        details = tool.arguments;
-    }
-    if (!tool.output.empty()) {
-        if (!details.empty())
-            details += '\n';
-        details += tool.output;
-    }
-    if (details.empty()) {
-        if (!tool.cwd.empty())
-            details = tool.cwd;
-        else
-            details = "No details available";
-    }
-
+    const bool has_status = !status.empty();
+    const ImVec2 status_size = has_status
+        ? measure_text(header_font, font_size, status) : ImVec2(0.0f, 0.0f);
     const float natural_title_width = measure_text(header_font, font_size, title).x;
     const ImVec2 natural_details_size = measure_text(details_font, font_size, details);
     const float title_offset = header_horizontal_padding + icon_size + icon_gap;
-    const float header_width = title_offset + natural_title_width + 9.0f + status_size.x +
+    const float status_gap = has_status ? 9.0f : 0.0f;
+    const float header_width = title_offset + natural_title_width + status_gap + status_size.x +
                                header_horizontal_padding;
     const float details_width = natural_details_size.x + details_horizontal_padding * 2.0f;
     const float card_width = std::min(available_width,
@@ -166,9 +160,10 @@ void render_tool_activity(const ToolActivity& tool, ImFont* monospace_font) {
     }
 
     const float title_x = card_min.x + title_offset;
-    const float status_right = card_min.x + card_width - header_horizontal_padding;
-    const float status_x = status_right - status_size.x;
-    const float title_max_width = std::max(0.0f, status_x - title_x - 9.0f);
+    const float title_right = card_min.x + card_width - header_horizontal_padding;
+    const float status_x = title_right - status_size.x;
+    const float title_max_width = std::max(
+        0.0f, title_right - title_x - status_size.x - status_gap);
     const std::string clipped_title = elide_tool_title(title, title_max_width, header_font,
                                                        font_size);
     const ImVec2 title_size = measure_text(header_font, font_size, clipped_title);
@@ -198,9 +193,11 @@ void render_tool_activity(const ToolActivity& tool, ImFont* monospace_font) {
     const ImVec2 icon_position(card_min.x + header_horizontal_padding,
                                card_min.y + header_vertical_padding +
                                    (font_size - icon_size) * 0.5f);
-    if (tool.is_terminal || !tool.command.empty())
+    if (icon == ActivityIcon::Terminal)
         render_terminal_icon(draw_list, ImVec2(icon_position.x, icon_position.y + 1.5f),
                              icon_color);
+    else if (icon == ActivityIcon::Reasoning)
+        render_reasoning_icon(draw_list, icon_position, icon_color);
     else
         render_tool_icon(draw_list, icon_position, icon_color);
 
@@ -210,20 +207,22 @@ void render_tool_activity(const ToolActivity& tool, ImFont* monospace_font) {
     ImGui::PushStyleColor(ImGuiCol_Text, text_color);
     ImGui::TextUnformatted(clipped_title.c_str());
     ImGui::PopStyleColor();
-    ImGui::SetCursorScreenPos(
-        ImVec2(std::max(status_x, title_x + title_size.x + 9.0f), text_y));
-    ImGui::PushStyleColor(ImGuiCol_Text, status_color);
-    ImGui::TextUnformatted(status.c_str());
-    ImGui::PopStyleColor();
+    if (has_status) {
+        ImGui::SetCursorScreenPos(
+            ImVec2(std::max(status_x, title_x + title_size.x + status_gap), text_y));
+        ImGui::PushStyleColor(ImGuiCol_Text, status_color);
+        ImGui::TextUnformatted(status.c_str());
+        ImGui::PopStyleColor();
+    }
     ImGui::PopFont();
 
     if (expanded) {
         const ImVec2 child_padding(details_horizontal_padding - corner_radius,
-                                   details_vertical_padding - corner_radius);
+                                   details_vertical_padding);
         const ImVec2 child_size(std::max(1.0f, card_width - corner_radius * 2.0f),
-                                std::max(1.0f, body_height - corner_radius * 2.0f));
+                                body_height);
         ImGui::SetCursorScreenPos(ImVec2(card_min.x + corner_radius,
-                                         card_min.y + row_height + corner_radius));
+                                         card_min.y + row_height));
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, child_padding);
@@ -242,6 +241,41 @@ void render_tool_activity(const ToolActivity& tool, ImFont* monospace_font) {
         ImGui::SetCursorScreenPos(ImVec2(card_min.x, card_min.y + row_height));
         ImGui::Dummy(ImVec2(card_width, 0.0f));
     }
+}
+
+void render_tool_activity(const ToolActivity& tool, ImFont* monospace_font) {
+    const bool is_terminal = tool.is_terminal || !tool.command.empty();
+    const std::string title = is_terminal
+        ? (tool.command.empty() ? "Terminal" : tool.command)
+        : (tool.name.empty() ? "Tool" : tool.name);
+    std::string details;
+    if (is_terminal)
+        details = tool.command;
+    else if (!tool.arguments.empty())
+        details = tool.arguments;
+    if (!tool.output.empty()) {
+        if (!details.empty())
+            details += '\n';
+        details += tool.output;
+    }
+    if (details.empty())
+        details = !tool.cwd.empty() ? tool.cwd : "No details available";
+
+    ImFont* default_font = ImGui::GetFont();
+    ImFont* header_font = is_terminal && monospace_font != nullptr
+        ? monospace_font : default_font;
+    ImFont* details_font = monospace_font != nullptr ? monospace_font : default_font;
+    ImVec4 status_color;
+    const std::string status = status_label(tool, &status_color);
+    const ActivityIcon icon = is_terminal ? ActivityIcon::Terminal : ActivityIcon::Tool;
+    render_expandable_card("##tool-expanded", title, icon, details, header_font,
+                           details_font, status, status_color);
+}
+
+void render_reasoning(const std::string& reasoning) {
+    ImFont* sans_font = ImGui::GetFont();
+    render_expandable_card("##reasoning-expanded", "Reasoning", ActivityIcon::Reasoning,
+                           reasoning, sans_font, sans_font, {}, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
 }
 
 void render_user_message(const ChatMessage& message) {
@@ -277,8 +311,7 @@ void render_user_message(const ChatMessage& message) {
 void render_chat_panel(ApplicationState& state, std::string& message_input, Provider& provider,
                        std::string& selected_model, std::string& selected_reasoning_effort,
                        bool& is_generating, TurnId& active_turn_id, TurnId& next_turn_id,
-                       ImFont* monospace_font, std::string& progress_text,
-                       const std::string& progress_conversation_id) {
+                       ImFont* monospace_font) {
     static ChatMarkdown markdown;
     if (!provider.models.empty()) {
         const auto selected = std::find_if(provider.models.begin(), provider.models.end(),
@@ -325,17 +358,8 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
             if (message.role == ChatMessageRole::User) {
                 render_user_message(message);
             } else {
-                if (!message.reasoning.empty()) {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.65f, 0.72f, 0.82f, 1.0f));
-                    if (ImGui::TreeNode("##thinking", "Thinking")) {
-                        ImGui::Indent();
-                        markdown.print(message.reasoning.c_str(),
-                                       message.reasoning.c_str() + message.reasoning.size());
-                        ImGui::Unindent();
-                        ImGui::TreePop();
-                    }
-                    ImGui::PopStyleColor();
-                }
+                if (!message.reasoning.empty())
+                    render_reasoning(message.reasoning);
                 if (!message.segments.empty()) {
                     for (std::size_t segment_index = 0;
                          segment_index < message.segments.size(); ++segment_index) {
@@ -366,12 +390,6 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
             ImGui::Dummy(ImVec2(1.0f, 9.0f));
         }
         ImGui::PopStyleVar();
-        if (progress_conversation_id == thread.id && !progress_text.empty()) {
-            if (ImGui::TreeNode("##thinking-progress", "Thinking")) {
-                markdown.print(progress_text.c_str(), progress_text.c_str() + progress_text.size());
-                ImGui::TreePop();
-            }
-        }
         if (was_at_bottom)
             ImGui::SetScrollHereY(1.0f);
         ImGui::EndChild();
@@ -488,7 +506,6 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
             provider.cancel(&provider, active_turn_id);
             is_generating = false;
             active_turn_id = 0;
-            progress_text.clear();
         } else if (!is_generating && (enter || send_clicked) && !message_input.empty()) {
             if (state.selected_thread > 0) {
                 std::rotate(threads.begin(),
