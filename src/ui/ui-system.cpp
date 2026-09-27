@@ -582,6 +582,14 @@ void UISystem::render_frame_to_backbuffer() {
                       m_selected_reasoning_effort, m_is_generating, m_active_turn_id,
                       m_next_turn_id, m_monospace_font);
 
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 panel_area_max(viewport->WorkPos.x + viewport->WorkSize.x,
+                                viewport->WorkPos.y + viewport->WorkSize.y);
+    ImGui::GetForegroundDrawList(viewport)->AddRect(
+        viewport->WorkPos, panel_area_max,
+        ImGui::GetColorU32(ImGuiCol_Border), 0.0f, 0,
+        ImGui::GetStyle().WindowBorderSize);
+
     prepare_backbuffer();
     render_settings_window();
 }
