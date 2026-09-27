@@ -52,6 +52,9 @@ struct Event {
     bool output_is_delta = false;
     std::string status{};
     int duration_ms = -1;
+    std::string tool_name{};
+    std::string tool_arguments{};
+    bool is_terminal = false;
 };
 
 struct TurnRequest {

@@ -4,7 +4,7 @@
 #include "misc/cpp/imgui_stdlib.h"
 #include <algorithm>
 #include <cfloat>
-#include <cmath>
+#include <cctype>
 #include <utility>
 
 namespace {
@@ -16,71 +16,232 @@ public:
     }
 };
 
-void render_tool_icon() {
-    const ImVec2 center = ImGui::GetCursorScreenPos();
-    const float radius = ImGui::GetTextLineHeight() * 0.32f;
-    const ImVec2 icon_center(center.x + radius, center.y + ImGui::GetTextLineHeight() * 0.5f);
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    const ImU32 color = ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-
-    draw_list->AddCircle(icon_center, radius, color, 12, 1.8f);
-    draw_list->AddCircleFilled(icon_center, radius * 0.3f, color, 8);
-    for (int spoke = 0; spoke < 8; ++spoke) {
-        const float angle = static_cast<float>(spoke) * 0.785398163f;
-        const ImVec2 inner(icon_center.x + std::cos(angle) * radius * 0.78f,
-                           icon_center.y + std::sin(angle) * radius * 0.78f);
-        const ImVec2 outer(icon_center.x + std::cos(angle) * radius * 1.18f,
-                           icon_center.y + std::sin(angle) * radius * 1.18f);
-        draw_list->AddLine(inner, outer, color, 1.8f);
-    }
-    ImGui::Dummy(ImVec2(radius * 2.4f, ImGui::GetTextLineHeight()));
+void render_terminal_icon(ImDrawList* draw_list, ImVec2 position, ImU32 color) {
+    const ImVec2 first(position.x + 0.5f, position.y + 1.5f);
+    const ImVec2 corner(position.x + 4.5f, position.y + 5.0f);
+    const ImVec2 last(position.x + 0.5f, position.y + 8.5f);
+    draw_list->AddLine(first, corner, color, 1.5f);
+    draw_list->AddLine(corner, last, color, 1.5f);
+    draw_list->AddLine(ImVec2(position.x + 5.1f, position.y + 8.4f),
+                       ImVec2(position.x + 12.5f, position.y + 8.4f), color, 1.5f);
 }
 
-void render_tool_activity(const ToolActivity& tool) {
-    const std::string status = tool.status.empty()
-        ? (tool.completed ? "Completed" : "Running") : tool.status;
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 6.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 6.0f));
-    ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0.12f, 0.12f, 0.12f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0.17f, 0.17f, 0.17f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0.28f, 0.28f, 0.28f, 1.0f));
+void render_tool_icon(ImDrawList* draw_list, ImVec2 position, ImU32 color) {
+    draw_list->PathLineTo(ImVec2(position.x + 5.0f, position.y + 1.7f));
+    draw_list->PathLineTo(ImVec2(position.x + 6.7f, position.y + 1.0f));
+    draw_list->PathLineTo(ImVec2(position.x + 8.9f, position.y + 1.8f));
+    draw_list->PathLineTo(ImVec2(position.x + 10.3f, position.y + 3.1f));
+    draw_list->PathLineTo(ImVec2(position.x + 10.7f, position.y + 4.9f));
+    draw_list->PathLineTo(ImVec2(position.x + 11.1f, position.y + 5.3f));
+    draw_list->PathLineTo(ImVec2(position.x + 12.2f, position.y + 5.3f));
+    draw_list->PathLineTo(ImVec2(position.x + 12.3f, position.y + 6.4f));
+    draw_list->PathLineTo(ImVec2(position.x + 11.0f, position.y + 7.7f));
+    draw_list->PathLineTo(ImVec2(position.x + 9.8f, position.y + 7.7f));
+    draw_list->PathLineTo(ImVec2(position.x + 9.4f, position.y + 6.2f));
+    draw_list->PathLineTo(ImVec2(position.x + 8.8f, position.y + 6.2f));
+    draw_list->PathLineTo(ImVec2(position.x + 7.6f, position.y + 5.7f));
+    draw_list->PathLineTo(ImVec2(position.x + 6.7f, position.y + 4.7f));
+    draw_list->PathLineTo(ImVec2(position.x + 6.2f, position.y + 3.6f));
+    draw_list->PathLineTo(ImVec2(position.x + 6.2f, position.y + 3.3f));
+    draw_list->PathLineTo(ImVec2(position.x + 5.9f, position.y + 2.7f));
+    draw_list->PathLineTo(ImVec2(position.x + 5.0f, position.y + 2.2f));
+    draw_list->PathFillConcave(color);
 
-    ImDrawList* draw_list = ImGui::GetWindowDrawList();
-    draw_list->ChannelsSplit(2);
-    draw_list->ChannelsSetCurrent(1);
-    const ImVec2 card_min = ImGui::GetCursorScreenPos();
-    ImGui::BeginGroup();
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, 14.0f));
-    const bool expanded = ImGui::TreeNodeEx("##tool-card", ImGuiTreeNodeFlags_SpanAvailWidth, "Tool");
-    ImGui::PopStyleVar();
-    ImGui::SameLine();
-    render_tool_icon();
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.72f, 0.82f, 0.90f, 1.0f), "%s", status.c_str());
-    if (expanded) {
-        ImGui::Spacing();
-        ImGui::TextWrapped("%s", tool.command.empty() ? "Command details unavailable" : tool.command.c_str());
-        if (!tool.cwd.empty())
-            ImGui::TextWrapped("Working directory: %s", tool.cwd.c_str());
-        if (tool.exit_code.has_value())
-            ImGui::Text("Exit code: %d", *tool.exit_code);
-        if (tool.duration_ms.has_value())
-            ImGui::Text("Duration: %d ms", *tool.duration_ms);
-        if (!tool.output.empty() && ImGui::TreeNode("##tool-output", "Output")) {
-            ImGui::TextWrapped("%s", tool.output.c_str());
-            ImGui::TreePop();
-        }
-        ImGui::Dummy(ImVec2(1.0f, 10.0f));
-        ImGui::TreePop();
+    draw_list->PathLineTo(ImVec2(position.x + 1.0f, position.y + 9.5f));
+    draw_list->PathLineTo(ImVec2(position.x + 5.5f, position.y + 5.0f));
+    draw_list->PathLineTo(ImVec2(position.x + 7.4f, position.y + 6.8f));
+    draw_list->PathLineTo(ImVec2(position.x + 2.9f, position.y + 11.3f));
+    draw_list->PathLineTo(ImVec2(position.x + 1.8f, position.y + 11.7f));
+    draw_list->PathLineTo(ImVec2(position.x + 1.0f, position.y + 11.3f));
+    draw_list->PathFillConcave(color);
+}
+
+std::string status_label(const ToolActivity& tool, ImVec4* color) {
+    std::string normalized = tool.status;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    if (normalized.find("fail") != std::string::npos ||
+        normalized.find("error") != std::string::npos) {
+        *color = ImVec4(0.86f, 0.53f, 0.55f, 1.0f);
+        return "Failed";
     }
-    ImGui::EndGroup();
-    const ImVec2 card_max = ImGui::GetItemRectMax();
-    draw_list->ChannelsSetCurrent(0);
-    draw_list->AddRectFilled(card_min, ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x, card_max.y),
-                             ImGui::GetColorU32(ImVec4(0.105f, 0.105f, 0.105f, 1.0f)));
-    draw_list->ChannelsMerge();
-    ImGui::PopStyleColor(3);
-    ImGui::PopStyleVar(2);
+    if (tool.completed || normalized == "completed" || normalized == "complete") {
+        *color = ImVec4(0.68f, 0.82f, 0.62f, 1.0f);
+        return "Completed";
+    }
+    if (normalized.empty() || normalized == "inprogress" || normalized == "in_progress" ||
+        normalized == "running") {
+        *color = ImVec4(0.57f, 0.69f, 0.91f, 1.0f);
+        return "Running";
+    }
+    *color = ImVec4(0.70f, 0.70f, 0.70f, 1.0f);
+    return tool.status;
+}
+
+ImVec2 measure_text(ImFont* font, float font_size, const std::string& text,
+                    float max_width = FLT_MAX, float wrap_width = 0.0f) {
+    return font->CalcTextSizeA(font_size, max_width, wrap_width, text.c_str(),
+                               text.c_str() + text.size());
+}
+
+std::string elide_tool_title(const std::string& title, float max_width, ImFont* font,
+                             float font_size) {
+    if (measure_text(font, font_size, title).x <= max_width)
+        return title;
+
+    std::size_t end = title.size();
+    while (end > 0) {
+        const std::string candidate = title.substr(0, end) + "...";
+        if (measure_text(font, font_size, candidate).x <= max_width)
+            return candidate;
+        --end;
+        while (end > 0 && (static_cast<unsigned char>(title[end]) & 0xc0) == 0x80)
+            --end;
+    }
+    return "...";
+}
+
+void render_tool_activity(const ToolActivity& tool, ImFont* monospace_font) {
+    constexpr float corner_radius = 5.0f;
+    constexpr float header_horizontal_padding = 14.0f;
+    constexpr float header_vertical_padding = 4.0f;
+    constexpr float icon_size = 13.0f;
+    constexpr float icon_gap = 10.0f;
+    constexpr float details_horizontal_padding = 14.0f;
+    constexpr float details_vertical_padding = 7.0f;
+    constexpr float max_body_height = 280.0f;
+    const float font_size = ImGui::GetFontSize();
+    const float row_height = font_size + header_vertical_padding * 2.0f;
+    const ImVec2 card_min = ImGui::GetCursorScreenPos();
+    const float available_width = ImGui::GetContentRegionAvail().x;
+    const ImGuiID expanded_id = ImGui::GetID("##tool-expanded");
+    ImGuiStorage* storage = ImGui::GetStateStorage();
+    bool expanded = storage->GetBool(expanded_id, false);
+
+    std::string title;
+    if (tool.is_terminal || !tool.command.empty())
+        title = tool.command.empty() ? "Terminal" : tool.command;
+    else
+        title = tool.name.empty() ? "Tool" : tool.name;
+    const bool is_terminal = tool.is_terminal || !tool.command.empty();
+    ImFont* default_font = ImGui::GetFont();
+    ImFont* header_font = is_terminal && monospace_font != nullptr
+        ? monospace_font : default_font;
+    ImFont* details_font = monospace_font != nullptr ? monospace_font : default_font;
+    ImVec4 status_color;
+    const std::string status = status_label(tool, &status_color);
+    const ImVec2 status_size = measure_text(header_font, font_size, status);
+    std::string details;
+    if (tool.is_terminal || !tool.command.empty()) {
+        details = tool.command;
+    } else if (!tool.arguments.empty()) {
+        details = tool.arguments;
+    }
+    if (!tool.output.empty()) {
+        if (!details.empty())
+            details += '\n';
+        details += tool.output;
+    }
+    if (details.empty()) {
+        if (!tool.cwd.empty())
+            details = tool.cwd;
+        else
+            details = "No details available";
+    }
+
+    const float natural_title_width = measure_text(header_font, font_size, title).x;
+    const ImVec2 natural_details_size = measure_text(details_font, font_size, details);
+    const float title_offset = header_horizontal_padding + icon_size + icon_gap;
+    const float header_width = title_offset + natural_title_width + 9.0f + status_size.x +
+                               header_horizontal_padding;
+    const float details_width = natural_details_size.x + details_horizontal_padding * 2.0f;
+    const float card_width = std::min(available_width,
+                                     std::max(header_width, expanded ? details_width : 0.0f));
+    ImGui::InvisibleButton("##tool-card", ImVec2(card_width, row_height));
+    const bool hovered = ImGui::IsItemHovered();
+    if (ImGui::IsItemClicked()) {
+        expanded = !expanded;
+        storage->SetBool(expanded_id, expanded);
+    }
+
+    const float title_x = card_min.x + title_offset;
+    const float status_right = card_min.x + card_width - header_horizontal_padding;
+    const float status_x = status_right - status_size.x;
+    const float title_max_width = std::max(0.0f, status_x - title_x - 9.0f);
+    const std::string clipped_title = elide_tool_title(title, title_max_width, header_font,
+                                                       font_size);
+    const ImVec2 title_size = measure_text(header_font, font_size, clipped_title);
+    const float text_y = card_min.y + header_vertical_padding;
+    const ImU32 icon_color = ImGui::GetColorU32(ImVec4(0.47f, 0.47f, 0.47f, 1.0f));
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    const float body_width = std::max(
+        1.0f, card_width - details_horizontal_padding * 2.0f);
+    const ImVec2 details_size = measure_text(details_font, font_size, details, body_width,
+                                             body_width);
+    const float body_content_height = std::max(ImGui::GetTextLineHeight(), details_size.y);
+    const float body_height = std::min(max_body_height,
+                                       body_content_height + details_vertical_padding * 2.0f);
+    const float card_height = row_height + (expanded ? body_height : 0.0f);
+    const ImVec4 background = hovered ? ImVec4(0.145f, 0.145f, 0.145f, 1.0f)
+                                      : ImVec4(0.105f, 0.105f, 0.105f, 1.0f);
+    draw_list->AddRectFilled(card_min, ImVec2(card_min.x + card_width, card_min.y + card_height),
+                             ImGui::GetColorU32(background), corner_radius);
+    if (expanded) {
+        draw_list->AddRectFilled(
+            ImVec2(card_min.x, card_min.y + row_height - 1.0f),
+            ImVec2(card_min.x + card_width, card_min.y + card_height),
+            ImGui::GetColorU32(ImVec4(0.065f, 0.065f, 0.065f, 1.0f)), corner_radius,
+            ImDrawFlags_RoundCornersBottom);
+    }
+
+    const ImVec2 icon_position(card_min.x + header_horizontal_padding,
+                               card_min.y + header_vertical_padding +
+                                   (font_size - icon_size) * 0.5f);
+    if (tool.is_terminal || !tool.command.empty())
+        render_terminal_icon(draw_list, ImVec2(icon_position.x, icon_position.y + 1.5f),
+                             icon_color);
+    else
+        render_tool_icon(draw_list, icon_position, icon_color);
+
+    const ImVec4 text_color(0.82f, 0.82f, 0.82f, 1.0f);
+    ImGui::PushFont(header_font, font_size);
+    ImGui::SetCursorScreenPos(ImVec2(title_x, text_y));
+    ImGui::PushStyleColor(ImGuiCol_Text, text_color);
+    ImGui::TextUnformatted(clipped_title.c_str());
+    ImGui::PopStyleColor();
+    ImGui::SetCursorScreenPos(
+        ImVec2(std::max(status_x, title_x + title_size.x + 9.0f), text_y));
+    ImGui::PushStyleColor(ImGuiCol_Text, status_color);
+    ImGui::TextUnformatted(status.c_str());
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
+
+    if (expanded) {
+        const ImVec2 child_padding(details_horizontal_padding - corner_radius,
+                                   details_vertical_padding - corner_radius);
+        const ImVec2 child_size(std::max(1.0f, card_width - corner_radius * 2.0f),
+                                std::max(1.0f, body_height - corner_radius * 2.0f));
+        ImGui::SetCursorScreenPos(ImVec2(card_min.x + corner_radius,
+                                         card_min.y + row_height + corner_radius));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, child_padding);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, corner_radius);
+        if (ImGui::BeginChild("##tool-details", child_size,
+                              ImGuiChildFlags_AlwaysUseWindowPadding,
+                              ImGuiWindowFlags_NoBackground)) {
+            ImGui::PushFont(details_font, font_size);
+            ImGui::TextWrapped("%s", details.c_str());
+            ImGui::PopFont();
+        }
+        ImGui::EndChild();
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor(2);
+    } else {
+        ImGui::SetCursorScreenPos(ImVec2(card_min.x, card_min.y + row_height));
+        ImGui::Dummy(ImVec2(card_width, 0.0f));
+    }
 }
 
 void render_user_message(const ChatMessage& message) {
@@ -116,7 +277,8 @@ void render_user_message(const ChatMessage& message) {
 void render_chat_panel(ApplicationState& state, std::string& message_input, Provider& provider,
                        std::string& selected_model, std::string& selected_reasoning_effort,
                        bool& is_generating, TurnId& active_turn_id, TurnId& next_turn_id,
-                       std::string& progress_text, const std::string& progress_conversation_id) {
+                       ImFont* monospace_font, std::string& progress_text,
+                       const std::string& progress_conversation_id) {
     static ChatMarkdown markdown;
     if (!provider.models.empty()) {
         const auto selected = std::find_if(provider.models.begin(), provider.models.end(),
@@ -175,10 +337,15 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
                     ImGui::PopStyleColor();
                 }
                 if (!message.segments.empty()) {
-                    for (const ChatSegment& segment : message.segments) {
+                    for (std::size_t segment_index = 0;
+                         segment_index < message.segments.size(); ++segment_index) {
+                        const ChatSegment& segment = message.segments[segment_index];
                         if (segment.kind == ChatSegment::Kind::Tool) {
-                            ImGui::PushID(segment.tool.id.c_str());
-                            render_tool_activity(segment.tool);
+                            if (segment.tool.id.empty())
+                                ImGui::PushID(static_cast<int>(segment_index));
+                            else
+                                ImGui::PushID(segment.tool.id.c_str());
+                            render_tool_activity(segment.tool, monospace_font);
                             ImGui::PopID();
                         } else if (!segment.text.empty()) {
                             markdown.print(segment.text.c_str(), segment.text.c_str() + segment.text.size());
@@ -188,7 +355,7 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
                     for (const std::string& activity : message.tool_activities) {
                         ToolActivity tool;
                         tool.command = activity;
-                        render_tool_activity(tool);
+                        render_tool_activity(tool, monospace_font);
                     }
                     markdown.print(message.content.c_str(),
                                    message.content.c_str() + message.content.size());

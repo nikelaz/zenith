@@ -14,12 +14,15 @@ enum class ChatMessageRole {
 
 struct ToolActivity {
     std::string id;
+    std::string name;
     std::string command;
+    std::string arguments;
     std::string cwd;
     std::string output;
     std::string status;
     std::optional<int> exit_code;
     std::optional<int> duration_ms;
+    bool is_terminal = false;
     bool completed = false;
 };
 

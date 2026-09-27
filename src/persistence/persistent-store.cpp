@@ -47,9 +47,10 @@ Json serialize_segments(const std::vector<ChatSegment>& segments) {
             result.push_back({{"kind", "text"}, {"text", segment.text}});
         } else {
             const ToolActivity& tool = segment.tool;
-            Json value = {{"kind", "tool"}, {"id", tool.id}, {"command", tool.command},
+            Json value = {{"kind", "tool"}, {"id", tool.id}, {"name", tool.name},
+                          {"command", tool.command}, {"arguments", tool.arguments},
                           {"cwd", tool.cwd}, {"output", tool.output}, {"status", tool.status},
-                          {"completed", tool.completed}};
+                          {"is_terminal", tool.is_terminal}, {"completed", tool.completed}};
             if (tool.exit_code)
                 value["exit_code"] = *tool.exit_code;
             if (tool.duration_ms)
@@ -73,10 +74,14 @@ std::vector<ChatSegment> deserialize_segments(const std::string& serialized) {
             if (value.value("kind", std::string{}) == "tool") {
                 segment.kind = ChatSegment::Kind::Tool;
                 segment.tool.id = value.value("id", std::string{});
+                segment.tool.name = value.value("name", std::string{});
                 segment.tool.command = value.value("command", std::string{});
+                segment.tool.arguments = value.value("arguments", std::string{});
                 segment.tool.cwd = value.value("cwd", std::string{});
                 segment.tool.output = value.value("output", std::string{});
                 segment.tool.status = value.value("status", std::string{});
+                segment.tool.is_terminal = value.value(
+                    "is_terminal", !segment.tool.command.empty());
                 segment.tool.completed = value.value("completed", false);
                 if (value.contains("exit_code") && value["exit_code"].is_number_integer())
                     segment.tool.exit_code = value["exit_code"].get<int>();

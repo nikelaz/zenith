@@ -9,66 +9,79 @@
 #include <algorithm>
 #include <cfloat>
 #include <cstdlib>
+#include <cstdint>
 #include <filesystem>
 #include <iterator>
 #include <string>
+#include <system_error>
+#include <vector>
 
-#ifdef __linux__
-#include <fontconfig/fontconfig.h>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
 #endif
 
 namespace {
-std::string system_font_path() {
+std::filesystem::path executable_directory() {
 #ifdef _WIN32
-    const char* windows_dir = std::getenv("WINDIR");
-    const std::filesystem::path fonts_dir =
-        (windows_dir != nullptr ? std::filesystem::path(windows_dir)
-                                : std::filesystem::path("C:/Windows")) / "Fonts";
-    const std::filesystem::path segoe = fonts_dir / "segoeui.ttf";
-    return std::filesystem::exists(segoe) ? segoe.string() : std::string{};
+    std::wstring executable(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, executable.data(),
+                                            static_cast<DWORD>(executable.size()));
+    if (length > 0 && length < static_cast<DWORD>(executable.size())) {
+        executable.resize(length);
+        return std::filesystem::path(executable).parent_path();
+    }
+    return std::filesystem::current_path();
 #elif defined(__APPLE__)
-    const std::filesystem::path candidates[] = {
-        "/System/Library/Fonts/SFNS.ttf",
-        "/System/Library/Fonts/SFNSDisplay.ttf",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-    };
-    for (const auto& path : candidates) {
-        if (std::filesystem::exists(path))
-            return path.string();
-    }
-    return {};
+    uint32_t length = 0;
+    _NSGetExecutablePath(nullptr, &length);
+    std::vector<char> executable(length);
+    if (length > 0 && _NSGetExecutablePath(executable.data(), &length) == 0)
+        return std::filesystem::path(executable.data()).parent_path();
+    return std::filesystem::current_path();
 #elif defined(__linux__)
-    FcConfig* config = FcInitLoadConfigAndFonts();
-    if (config == nullptr)
-        return {};
-    FcPattern* pattern = FcNameParse(reinterpret_cast<const FcChar8*>("sans-serif"));
-    if (pattern == nullptr) {
-        FcConfigDestroy(config);
-        return {};
-    }
-    FcConfigSubstitute(config, pattern, FcMatchPattern);
-    FcDefaultSubstitute(pattern);
-    FcResult result = FcResultNoMatch;
-    FcPattern* match = FcFontMatch(config, pattern, &result);
-    std::string path;
-    FcChar8* file = nullptr;
-    if (match != nullptr && FcPatternGetString(match, FC_FILE, 0, &file) == FcResultMatch)
-        path = reinterpret_cast<const char*>(file);
-    if (match != nullptr)
-        FcPatternDestroy(match);
-    FcPatternDestroy(pattern);
-    FcConfigDestroy(config);
-    return path;
+    std::error_code error;
+    const std::filesystem::path executable = std::filesystem::read_symlink(
+        "/proc/self/exe", error);
+    return error ? std::filesystem::current_path() : executable.parent_path();
 #else
-    return {};
+    return std::filesystem::current_path();
 #endif
 }
 
-void load_system_font() {
-    const std::string path = system_font_path();
-    if (!path.empty() && ImGui::GetIO().Fonts->AddFontFromFileTTF(path.c_str(), 16.0f) != nullptr)
-        return;
-    ImGui::GetIO().Fonts->AddFontDefault();
+std::filesystem::path bundled_font_path(const char* family, const char* filename) {
+    const std::filesystem::path binary_directory = executable_directory();
+    std::vector<std::filesystem::path> font_directories;
+#ifdef __APPLE__
+    font_directories.push_back(binary_directory.parent_path() / "Resources" / "fonts");
+#endif
+    font_directories.push_back(binary_directory / "assets" / "fonts");
+    font_directories.push_back(std::filesystem::current_path() / "assets" / "fonts");
+    for (const std::filesystem::path& directory : font_directories) {
+        const std::filesystem::path path = directory / family / filename;
+        if (std::filesystem::is_regular_file(path))
+            return path;
+    }
+    return {};
+}
+
+ImFont* load_bundled_font(const char* family, const char* filename, bool pixel_snap) {
+    const std::filesystem::path path = bundled_font_path(family, filename);
+    if (path.empty())
+        return nullptr;
+    if (pixel_snap) {
+        ImFontConfig config;
+        config.PixelSnapH = true;
+        config.OversampleH = 1;
+        config.OversampleV = 1;
+        config.RasterizerMultiply = 1.1f;
+        return ImGui::GetIO().Fonts->AddFontFromFileTTF(path.string().c_str(), 16.0f, &config);
+    }
+    return ImGui::GetIO().Fonts->AddFontFromFileTTF(path.string().c_str(), 16.0f);
 }
 
 void set_premiere_theme() {
@@ -90,7 +103,7 @@ void set_premiere_theme() {
     style.ItemSpacing = ImVec2(10.0f, 8.0f);
     style.ItemInnerSpacing = ImVec2(8.0f, 6.0f);
     style.ScrollbarSize = 8.0f;
-    style.ScrollbarRounding = 6.0f;
+    style.ScrollbarRounding = style.ScrollbarSize * 0.5f;
     style.GrabMinSize = 10.0f;
     style.GrabRounding = 6.0f;
     style.TabRounding = 0.0f;
@@ -217,7 +230,13 @@ Result UISystem::init() {
     m_main_context = ImGui::GetCurrentContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    load_system_font();
+    ImFont* interface_font = load_bundled_font(
+        "IBM-Plex-Sans", "IBMPlexSans-Regular.ttf", false);
+    if (interface_font == nullptr)
+        interface_font = io.Fonts->AddFontDefault();
+    io.FontDefault = interface_font;
+    m_monospace_font = load_bundled_font(
+        "JetBrains-Mono", "JetBrainsMono-Regular.ttf", true);
     set_premiere_theme();
 
     if (!ImGui_ImplGlfw_InitForOpenGL(m_window, true)) {
@@ -326,8 +345,14 @@ void UISystem::render_frame_to_backbuffer() {
                         message.segments.push_back(std::move(value));
                         segment = std::prev(message.segments.end());
                     }
+                    if (!event.tool_name.empty())
+                        segment->tool.name = event.tool_name;
                     if (!event.text.empty())
                         segment->tool.command = event.text;
+                    if (!event.tool_arguments.empty())
+                        segment->tool.arguments = event.tool_arguments;
+                    if (event.is_terminal)
+                        segment->tool.is_terminal = true;
                     if (!event.cwd.empty())
                         segment->tool.cwd = event.cwd;
                     if (!event.output.empty()) {
@@ -386,7 +411,8 @@ void UISystem::render_frame_to_backbuffer() {
     render_threads_panel(m_state);
     render_chat_panel(m_state, m_message_input, m_provider, m_selected_model,
                       m_selected_reasoning_effort, m_is_generating, m_active_turn_id,
-                      m_next_turn_id, m_progress_text, m_progress_conversation_id);
+                      m_next_turn_id, m_monospace_font, m_progress_text,
+                      m_progress_conversation_id);
 
     prepare_backbuffer();
     render_settings_window();

@@ -5,6 +5,7 @@
 #include <string>
 
 struct ImGuiContext;
+struct ImFont;
 
 class UISystem {
 private:
@@ -23,6 +24,7 @@ private:
     bool m_is_generating = false;
     TurnId m_active_turn_id = 0;
     TurnId m_next_turn_id = 1;
+    ImFont* m_monospace_font = nullptr;
     std::string m_progress_text;
     std::string m_progress_conversation_id;
 

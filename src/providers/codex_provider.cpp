@@ -61,6 +61,19 @@ std::filesystem::path resolve_executable(const std::filesystem::path& executable
     return {};
 }
 
+std::string json_text(const Json& value) {
+    if (value.is_string())
+        return value.get<std::string>();
+    if (value.is_null())
+        return {};
+    return value.dump(2);
+}
+
+bool is_tool_item(const std::string& type) {
+    return type == "commandExecution" || type == "fileChange" || type == "mcpToolCall" ||
+           type == "dynamicToolCall" || type == "webSearch";
+}
+
 struct CodexProcess;
 
 struct CodexState {
@@ -85,6 +98,69 @@ struct StreamContext {
     bool turn_failed = false;
     std::string error;
 };
+
+Event make_tool_activity_event(StreamContext* context, const Json& item, bool completed) {
+    const std::string type = string_value(item, "type");
+    Event event{EventKind::ToolActivity, context->request->conversation_id,
+                context->request->turn_id};
+    event.item_id = string_value(item, "id");
+    event.status = string_value(item, "status");
+    event.tool_completed = completed;
+    if (event.status.empty())
+        event.status = completed ? "completed" : "inProgress";
+
+    if (type == "commandExecution") {
+        event.text = string_value(item, "command");
+        event.cwd = string_value(item, "cwd");
+        event.is_terminal = true;
+        if (completed) {
+            event.output = string_value(item, "aggregatedOutput");
+            if (item.contains("exitCode") && item["exitCode"].is_number_integer())
+                event.exit_code = item["exitCode"].get<int>();
+            if (item.contains("durationMs") && item["durationMs"].is_number_integer())
+                event.duration_ms = item["durationMs"].get<int>();
+        }
+        return event;
+    }
+
+    if (type == "fileChange") {
+        event.tool_name = "edit";
+        if (item.contains("changes"))
+            event.tool_arguments = json_text(item["changes"]);
+    } else if (type == "webSearch") {
+        event.tool_name = "web search";
+        event.tool_arguments = string_value(item, "query");
+    } else {
+        event.tool_name = string_value(item, "tool");
+        if (event.tool_name.empty())
+            event.tool_name = type;
+        if (item.contains("arguments"))
+            event.tool_arguments = json_text(item["arguments"]);
+    }
+
+    if (completed) {
+        if (item.contains("results"))
+            event.output = json_text(item["results"]);
+        else if (item.contains("result"))
+            event.output = json_text(item["result"]);
+        else if (item.contains("contentItems"))
+            event.output = json_text(item["contentItems"]);
+        else if (type == "fileChange") {
+            event.output = string_value(item, "stdout");
+            const std::string stderr_output = string_value(item, "stderr");
+            if (!stderr_output.empty()) {
+                if (!event.output.empty())
+                    event.output += '\n';
+                event.output += stderr_output;
+            }
+        }
+        if (event.output.empty() && item.contains("error"))
+            event.output = json_text(item["error"]);
+        if (item.contains("durationMs") && item["durationMs"].is_number_integer())
+            event.duration_ms = item["durationMs"].get<int>();
+    }
+    return event;
+}
 
 Result start_codex_process(const CodexOptions* options, CodexProcess* process) {
     int input_pipe[2];
@@ -200,34 +276,14 @@ void handle_server_message(StreamContext* context, const Json& message) {
         emit_stream_event(context, EventKind::ReasoningSummaryDelta, string_value(params, "delta"));
     } else if (method == "item/started") {
         const Json item = params.value("item", Json::object());
-        if (string_value(item, "type") == "commandExecution") {
-            const Event event{EventKind::ToolActivity,
-                              context->request->conversation_id,
-                              context->request->turn_id,
-                              string_value(item, "command"), {}, {},
-                              string_value(item, "id"), string_value(item, "cwd"), {}, -1, false,
-                              false,
-                              string_value(item, "status").empty()
-                                  ? "inProgress" : string_value(item, "status"),
-                              -1};
+        if (is_tool_item(string_value(item, "type"))) {
+            const Event event = make_tool_activity_event(context, item, false);
             provider_runtime_emit(context->runtime, &event);
         }
     } else if (method == "item/completed") {
         const Json item = params.value("item", Json::object());
-        if (string_value(item, "type") == "commandExecution") {
-            const Event event{EventKind::ToolActivity,
-                              context->request->conversation_id,
-                              context->request->turn_id,
-                              string_value(item, "command"), {}, {},
-                              string_value(item, "id"), string_value(item, "cwd"),
-                              string_value(item, "aggregatedOutput"),
-                              item.contains("exitCode") && item["exitCode"].is_number_integer()
-                                  ? item["exitCode"].get<int>() : -1,
-                              true, false,
-                              string_value(item, "status").empty()
-                                  ? "completed" : string_value(item, "status"),
-                              item.contains("durationMs") && item["durationMs"].is_number_integer()
-                                  ? item["durationMs"].get<int>() : -1};
+        if (is_tool_item(string_value(item, "type"))) {
+            const Event event = make_tool_activity_event(context, item, true);
             provider_runtime_emit(context->runtime, &event);
         }
     } else if (method == "item/commandExecution/outputDelta") {

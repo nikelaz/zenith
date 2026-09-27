@@ -20,11 +20,6 @@ add_subdirectory(third_party/glfw EXCLUDE_FROM_ALL)
 
 find_package(OpenGL REQUIRED)
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(Fontconfig REQUIRED IMPORTED_TARGET fontconfig)
-endif()
-
 set_source_files_properties(third_party/tinyfiledialogs/tinyfiledialogs.c PROPERTIES LANGUAGE CXX)
 add_subdirectory(third_party/sqlite3 EXCLUDE_FROM_ALL)
 
@@ -198,12 +193,25 @@ add_executable(Zenith
     src/ui/ui-system.cpp
     third_party/tinyfiledialogs/tinyfiledialogs.c
 )
+if(APPLE)
+    set_target_properties(Zenith PROPERTIES MACOSX_BUNDLE TRUE)
+    add_custom_command(TARGET Zenith POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_BUNDLE_DIR:Zenith>/Contents/Resources/fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts"
+            "$<TARGET_BUNDLE_DIR:Zenith>/Contents/Resources/fonts"
+    )
+else()
+    add_custom_command(TARGET Zenith POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Zenith>/assets/fonts"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${CMAKE_CURRENT_SOURCE_DIR}/assets/fonts"
+            "$<TARGET_FILE_DIR:Zenith>/assets/fonts"
+    )
+endif()
 target_include_directories(Zenith PRIVATE third_party/tinyfiledialogs third_party/sqlite3 third_party/json/include)
 target_link_libraries(Zenith PRIVATE imgui_md SQLite3)
-
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_libraries(Zenith PRIVATE PkgConfig::Fontconfig)
-endif()
 
 if(APPLE)
     target_compile_definitions(Zenith PRIVATE GL_SILENCE_DEPRECATION)
