@@ -4,9 +4,18 @@
 #include "../state/application-state.h"
 #include <string>
 struct ImFont;
-void render_chat_panel(ApplicationState& state, std::string& message_input,
-                       std::vector<ProviderPtr>& providers, std::size_t& selected_provider,
-                       std::string& selected_model, std::string& selected_reasoning_effort,
-                       bool& is_generating, TurnId& active_turn_id, TurnId& next_turn_id,
-                       ImFont* monospace_font);
+
+struct ChatPanelState {
+    std::string message_input;
+    std::size_t selected_provider = 0;
+    std::string selected_model;
+    std::string selected_reasoning_effort;
+    bool is_generating = false;
+    TurnId active_turn_id = 0;
+    TurnId next_turn_id = 1;
+    ImFont* monospace_font = nullptr;
+};
+
+void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& providers,
+                       ChatPanelState& panel_state);
 #endif

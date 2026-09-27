@@ -796,11 +796,16 @@ void render_user_message(const ChatMessage& message) {
 
 }
 
-void render_chat_panel(ApplicationState& state, std::string& message_input,
-                       std::vector<ProviderPtr>& providers, std::size_t& selected_provider,
-                       std::string& selected_model, std::string& selected_reasoning_effort,
-                       bool& is_generating, TurnId& active_turn_id, TurnId& next_turn_id,
-                       ImFont* monospace_font) {
+void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& providers,
+                       ChatPanelState& panel_state) {
+    std::string& message_input = panel_state.message_input;
+    std::size_t& selected_provider = panel_state.selected_provider;
+    std::string& selected_model = panel_state.selected_model;
+    std::string& selected_reasoning_effort = panel_state.selected_reasoning_effort;
+    bool& is_generating = panel_state.is_generating;
+    TurnId& active_turn_id = panel_state.active_turn_id;
+    TurnId& next_turn_id = panel_state.next_turn_id;
+    ImFont* monospace_font = panel_state.monospace_font;
     Provider* provider = providers[selected_provider].get();
     if (!is_generating && provider->availability != ProviderAvailability::Available) {
         for (std::size_t index = 0; index < providers.size(); ++index) {

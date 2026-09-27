@@ -4,6 +4,7 @@
 #include "../base/result.h"
 #include "../providers/provider.h"
 #include "../state/application-state.h"
+#include "chat-panel.h"
 #include <GLFW/glfw3.h>
 #include <string>
 #include <vector>
@@ -23,19 +24,12 @@ private:
     double m_settings_last_frame_time = 0.0;
     ApplicationState& m_state;
     std::vector<ProviderPtr>& m_providers;
-    std::size_t m_selected_provider = 0;
-    std::string m_message_input;
-    std::string m_selected_model;
-    std::string m_selected_reasoning_effort;
-    bool m_is_generating = false;
+    ChatPanelState m_chat_panel_state;
     unsigned int m_menu_icon_texture = 0;
     int m_title_bar_drag_window_x = 0;
     int m_title_bar_drag_window_y = 0;
     double m_title_bar_drag_cursor_x = 0.0;
     double m_title_bar_drag_cursor_y = 0.0;
-    TurnId m_active_turn_id = 0;
-    TurnId m_next_turn_id = 1;
-    ImFont* m_monospace_font = nullptr;
 
     void new_frame();
     void prepare_backbuffer();

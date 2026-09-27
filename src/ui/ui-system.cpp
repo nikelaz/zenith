@@ -301,11 +301,13 @@ void settings_focus_callback(GLFWwindow* window, int focused) {
 UISystem::UISystem(GLFWwindow* window, ApplicationState& state,
                    std::vector<ProviderPtr>& providers)
     : m_window(window), m_state(state), m_providers(providers),
-      m_selected_model(providers.empty() ? std::string{} : providers.front()->default_model) {
+      m_chat_panel_state() {
+    m_chat_panel_state.selected_model = providers.empty()
+        ? std::string{} : providers.front()->default_model;
     for (std::size_t index = 0; index < providers.size(); ++index) {
         if (providers[index]->name == "GitHub Copilot") {
-            m_selected_provider = index;
-            m_selected_model = providers[index]->default_model;
+            m_chat_panel_state.selected_provider = index;
+            m_chat_panel_state.selected_model = providers[index]->default_model;
             break;
         }
     }
@@ -322,7 +324,7 @@ Result UISystem::init() {
     if (interface_font == nullptr)
         interface_font = io.Fonts->AddFontDefault();
     io.FontDefault = interface_font;
-    m_monospace_font = load_bundled_font(
+    m_chat_panel_state.monospace_font = load_bundled_font(
         "JetBrains-Mono", "JetBrainsMono-Regular.ttf", true);
     set_premiere_theme();
 
@@ -470,15 +472,15 @@ void UISystem::render_frame_to_backbuffer() {
                     message.segments.push_back({ChatSegment::Kind::Text, {}, {}});
                 message.segments.back().text += event.text;
             } else if (event.kind == EventKind::TurnFailed) {
-                if (event.turn_id == m_active_turn_id) {
-                    m_is_generating = false;
-                    m_active_turn_id = 0;
+                if (event.turn_id == m_chat_panel_state.active_turn_id) {
+                    m_chat_panel_state.is_generating = false;
+                    m_chat_panel_state.active_turn_id = 0;
                 }
                 messages.push_back({ChatMessageRole::Assistant, event.text, {}, {}, {}});
             } else if (event.kind == EventKind::TurnCompleted) {
-                if (event.turn_id == m_active_turn_id) {
-                    m_is_generating = false;
-                    m_active_turn_id = 0;
+                if (event.turn_id == m_chat_panel_state.active_turn_id) {
+                    m_chat_panel_state.is_generating = false;
+                    m_chat_panel_state.active_turn_id = 0;
                 }
             }
         } catch (...) {
@@ -603,9 +605,7 @@ void UISystem::render_frame_to_backbuffer() {
     }
     render_dock_area();
     render_threads_panel(m_state);
-    render_chat_panel(m_state, m_message_input, m_providers, m_selected_provider, m_selected_model,
-                      m_selected_reasoning_effort, m_is_generating, m_active_turn_id,
-                      m_next_turn_id, m_monospace_font);
+    render_chat_panel(m_state, m_providers, m_chat_panel_state);
 
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImVec2 panel_area_max(viewport->WorkPos.x + viewport->WorkSize.x,
