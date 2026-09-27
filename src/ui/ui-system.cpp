@@ -418,6 +418,8 @@ bool UISystem::open_settings_window() {
 
     ImGui::SetCurrentContext(m_main_context);
     ImGuiContext* settings_context = ImGui::CreateContext(ImGui::GetIO().Fonts);
+    ImGui::SetCurrentContext(settings_context);
+    ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
     set_premiere_theme();
 
     m_settings_window = settings_window;
