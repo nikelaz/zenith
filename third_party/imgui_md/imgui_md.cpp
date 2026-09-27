@@ -155,6 +155,10 @@ void imgui_md::CODE_TEXT(const char* str, const char* str_end)
 	render_text(str, str_end);
 }
 
+void imgui_md::TEXT_RENDERED(const char*, const char*)
+{
+}
+
 void imgui_md::BLOCK_HTML(bool)
 {
 
@@ -403,6 +407,7 @@ void imgui_md::render_text(const char* str, const char* str_end)
 			++te;
 
 		ImGui::TextUnformatted(str, te);
+		TEXT_RENDERED(str, te);
 
 		if (te > str && *(te - 1) == '\n') {
 			is_lf = true;

@@ -1,15 +1,182 @@
 #include "chat-panel.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "imgui_md.h"
 #include "misc/cpp/imgui_stdlib.h"
 #include <algorithm>
 #include <cfloat>
 #include <cctype>
 #include <initializer_list>
+#include <limits>
 #include <string_view>
 #include <utility>
 
 namespace {
+struct TextSpan {
+    std::string text;
+    ImVec2 position;
+    ImVec2 clip_min;
+    ImVec2 clip_max;
+    ImFont* font;
+    float font_size;
+    ImDrawList* draw_list;
+};
+
+struct TextEndpoint {
+    std::size_t span = 0;
+    std::size_t byte = 0;
+};
+
+struct TranscriptSelection {
+    std::vector<TextSpan> spans;
+    TextEndpoint anchor;
+    TextEndpoint focus;
+    bool tracking = false;
+    bool dragged = false;
+};
+
+TranscriptSelection transcript_selection;
+
+void register_text(const char* begin, const char* end, ImVec2 position,
+                   ImFont* font = nullptr, float font_size = 0.0f) {
+    if (begin == end)
+        return;
+    if (font == nullptr)
+        font = ImGui::GetFont();
+    if (font_size == 0.0f)
+        font_size = ImGui::GetFontSize();
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    const ImVec2 clip_min = draw_list->GetClipRectMin();
+    const ImVec2 clip_max = draw_list->GetClipRectMax();
+    const char* line = begin;
+    float y = position.y;
+    while (line < end) {
+        const char* finish = std::find(line, end, '\n');
+        if (finish > line)
+            transcript_selection.spans.push_back({std::string(line, finish),
+                ImVec2(position.x, y), clip_min, clip_max, font, font_size, draw_list});
+        if (finish == end)
+            break;
+        line = finish + 1;
+        y += font_size;
+    }
+}
+
+float span_width(const TextSpan& span, std::size_t bytes) {
+    return span.font->CalcTextSizeA(span.font_size, FLT_MAX, 0.0f,
+                                    span.text.c_str(), span.text.c_str() + bytes).x;
+}
+
+bool is_over_selectable_text(ImVec2 point) {
+    for (const TextSpan& span : transcript_selection.spans) {
+        const float right = span.position.x + span_width(span, span.text.size());
+        if (point.x >= span.position.x && point.x < right &&
+            point.y >= span.position.y && point.y < span.position.y + span.font_size &&
+            point.x >= span.clip_min.x && point.x < span.clip_max.x &&
+            point.y >= span.clip_min.y && point.y < span.clip_max.y)
+            return true;
+    }
+    return false;
+}
+
+TextEndpoint text_endpoint_at(ImVec2 point) {
+    const auto& spans = transcript_selection.spans;
+    TextEndpoint nearest;
+    float nearest_distance = std::numeric_limits<float>::max();
+    for (std::size_t index = 0; index < spans.size(); ++index) {
+        const TextSpan& span = spans[index];
+        const float width = span_width(span, span.text.size());
+        const float left = std::max(span.position.x, span.clip_min.x);
+        const float right = std::min(span.position.x + width, span.clip_max.x);
+        const float top = std::max(span.position.y, span.clip_min.y);
+        const float bottom = std::min(span.position.y + span.font_size, span.clip_max.y);
+        if (left >= right || top >= bottom)
+            continue;
+        const float dx = point.x < left ? left - point.x :
+                         point.x > right ? point.x - right : 0.0f;
+        const float dy = point.y < top ? top - point.y :
+                         point.y > bottom ? point.y - bottom : 0.0f;
+        const float distance = dy * 1000.0f + dx;
+        if (distance >= nearest_distance)
+            continue;
+        nearest_distance = distance;
+        nearest.span = index;
+        nearest.byte = 0;
+        const float local_x = point.x - span.position.x;
+        std::size_t offset = 0;
+        while (offset < span.text.size()) {
+            std::size_t next = offset + 1;
+            while (next < span.text.size() &&
+                   (static_cast<unsigned char>(span.text[next]) & 0xc0) == 0x80)
+                ++next;
+            if (local_x < (span_width(span, offset) + span_width(span, next)) * 0.5f)
+                break;
+            offset = next;
+        }
+        nearest.byte = offset;
+    }
+    return nearest;
+}
+
+bool endpoint_before(TextEndpoint a, TextEndpoint b) {
+    return a.span < b.span || (a.span == b.span && a.byte < b.byte);
+}
+
+bool has_text_selection() {
+    return transcript_selection.anchor.span != transcript_selection.focus.span ||
+           transcript_selection.anchor.byte != transcript_selection.focus.byte;
+}
+
+std::string selected_transcript_text() {
+    if (!has_text_selection() || transcript_selection.spans.empty())
+        return {};
+    TextEndpoint first = transcript_selection.anchor;
+    TextEndpoint last = transcript_selection.focus;
+    if (endpoint_before(last, first))
+        std::swap(first, last);
+    if (last.span >= transcript_selection.spans.size())
+        return {};
+    std::string result;
+    for (std::size_t index = first.span; index <= last.span; ++index) {
+        const TextSpan& span = transcript_selection.spans[index];
+        const std::size_t begin = index == first.span ? first.byte : 0;
+        const std::size_t end = index == last.span ? last.byte : span.text.size();
+        if (!result.empty() && index > first.span) {
+            const TextSpan& previous = transcript_selection.spans[index - 1];
+            if (span.position.y > previous.position.y + previous.font_size * 0.5f ||
+                span.position.x < previous.position.x)
+                result += '\n';
+        }
+        result.append(span.text, begin, end - begin);
+    }
+    return result;
+}
+
+void draw_text_selection() {
+    if (!has_text_selection() || transcript_selection.spans.empty())
+        return;
+    TextEndpoint first = transcript_selection.anchor;
+    TextEndpoint last = transcript_selection.focus;
+    if (endpoint_before(last, first))
+        std::swap(first, last);
+    if (last.span >= transcript_selection.spans.size())
+        return;
+    const ImU32 color = ImGui::GetColorU32(ImVec4(0.29f, 0.46f, 0.76f, 0.45f));
+    for (std::size_t index = first.span; index <= last.span; ++index) {
+        const TextSpan& span = transcript_selection.spans[index];
+        const std::size_t begin = index == first.span ? first.byte : 0;
+        const std::size_t end = index == last.span ? last.byte : span.text.size();
+        if (begin == end)
+            continue;
+        span.draw_list->PushClipRect(span.clip_min, span.clip_max, true);
+        span.draw_list->AddRectFilled(
+            ImVec2(span.position.x + span_width(span, begin), span.position.y),
+            ImVec2(span.position.x + span_width(span, end), span.position.y + span.font_size),
+            color);
+        span.draw_list->PopClipRect();
+    }
+}
+
 void render_code_card(const std::string& code, const std::string& language,
                       ImFont* monospace_font);
 
@@ -71,6 +238,10 @@ protected:
 
     void CODE_TEXT(const char* begin, const char* end) override {
         code.append(begin, end);
+    }
+
+    void TEXT_RENDERED(const char* begin, const char* end) override {
+        register_text(begin, end, ImGui::GetItemRectMin());
     }
 
 private:
@@ -183,6 +354,35 @@ std::string elide_tool_title(const std::string& title, float max_width, ImFont* 
     return "...";
 }
 
+void render_wrapped_selectable_text(const std::string& text, float width) {
+    ImFont* font = ImGui::GetFont();
+    const float font_size = ImGui::GetFontSize();
+    const ImVec2 start = ImGui::GetCursorScreenPos();
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    const ImU32 color = ImGui::GetColorU32(ImGuiCol_Text);
+    const char* cursor = text.c_str();
+    const char* end = cursor + text.size();
+    std::size_t line = 0;
+    while (cursor < end) {
+        const char* hard_end = std::find(cursor, end, '\n');
+        const char* wrap_end = font->CalcWordWrapPosition(font_size, cursor, hard_end, width);
+        if (wrap_end == cursor)
+            wrap_end = cursor + 1;
+        const ImVec2 position(start.x, start.y + line * font_size);
+        draw_list->AddText(font, font_size, position, color, cursor, wrap_end);
+        register_text(cursor, wrap_end, position, font, font_size);
+        cursor = wrap_end;
+        if (cursor < hard_end) {
+            while (cursor < hard_end && *cursor == ' ')
+                ++cursor;
+        } else if (cursor == hard_end && cursor < end) {
+            ++cursor;
+        }
+        ++line;
+    }
+    ImGui::Dummy(ImVec2(width, std::max(1.0f, line * font_size)));
+}
+
 void render_code_card(const std::string& code, const std::string& language,
                       ImFont* monospace_font) {
     constexpr float padding = 14.0f;
@@ -228,6 +428,8 @@ void render_code_card(const std::string& code, const std::string& language,
                   {457.4f, 393.4f}});
     draw_list->AddText(ImVec2(start.x + padding + 23.0f, start.y + header_padding),
                        ImGui::GetColorU32(ImVec4(0.82f, 0.82f, 0.82f, 1.0f)), "Code");
+    register_text("Code", "Code" + 4,
+                  ImVec2(start.x + padding + 23.0f, start.y + header_padding));
     const std::string language_label = display_language(language);
     if (!language_label.empty()) {
         const float label_width = ImGui::CalcTextSize("Code").x;
@@ -235,6 +437,9 @@ void render_code_card(const std::string& code, const std::string& language,
                                   start.y + header_padding),
                            ImGui::GetColorU32(ImVec4(0.57f, 0.69f, 0.91f, 1.0f)),
                            language_label.c_str());
+        register_text(language_label.c_str(), language_label.c_str() + language_label.size(),
+                      ImVec2(start.x + padding + 32.0f + label_width,
+                             start.y + header_padding));
     }
 
     ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + header_height));
@@ -308,6 +513,7 @@ void render_code_card(const std::string& code, const std::string& language,
             const char* begin = code.c_str() + token_start;
             const char* finish = code.c_str() + pos;
             code_draw_list->AddText(font, font_size, ImVec2(x, y), color, begin, finish);
+            register_text(begin, finish, ImVec2(x, y), font, font_size);
             x += font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, begin, finish).x;
         }
         widest_line = std::max(widest_line, x - text_start.x);
@@ -356,7 +562,8 @@ void render_expandable_card(const char* expanded_id_name, const std::string& tit
                                      std::max(header_width, expanded ? details_width : 0.0f));
     ImGui::InvisibleButton("##tool-card", ImVec2(card_width, row_height));
     const bool hovered = ImGui::IsItemHovered();
-    if (ImGui::IsItemClicked()) {
+    if (hovered && ImGui::IsMouseReleased(0) &&
+        ImGui::GetIO().MouseDragMaxDistanceSqr[0] <= 9.0f) {
         expanded = !expanded;
         storage->SetBool(expanded_id, expanded);
     }
@@ -408,12 +615,16 @@ void render_expandable_card(const char* expanded_id_name, const std::string& tit
     ImGui::SetCursorScreenPos(ImVec2(title_x, text_y));
     ImGui::PushStyleColor(ImGuiCol_Text, text_color);
     ImGui::TextUnformatted(clipped_title.c_str());
+    register_text(clipped_title.c_str(), clipped_title.c_str() + clipped_title.size(),
+                  ImGui::GetItemRectMin(), header_font, font_size);
     ImGui::PopStyleColor();
     if (has_status) {
         ImGui::SetCursorScreenPos(
             ImVec2(std::max(status_x, title_x + title_size.x + status_gap), text_y));
         ImGui::PushStyleColor(ImGuiCol_Text, status_color);
         ImGui::TextUnformatted(status.c_str());
+        register_text(status.c_str(), status.c_str() + status.size(),
+                      ImGui::GetItemRectMin(), header_font, font_size);
         ImGui::PopStyleColor();
     }
     ImGui::PopFont();
@@ -433,7 +644,7 @@ void render_expandable_card(const char* expanded_id_name, const std::string& tit
                               ImGuiChildFlags_AlwaysUseWindowPadding,
                               ImGuiWindowFlags_NoBackground)) {
             ImGui::PushFont(details_font, font_size);
-            ImGui::TextWrapped("%s", details.c_str());
+            render_wrapped_selectable_text(details, body_width);
             ImGui::PopFont();
         }
         ImGui::EndChild();
@@ -501,9 +712,7 @@ void render_user_message(const ChatMessage& message) {
         bubble_min, bubble_max, ImGui::GetColorU32(ImVec4(0.20f, 0.20f, 0.20f, 1.0f)), 6.0f);
     ImGui::SetCursorScreenPos(ImVec2(bubble_min.x + horizontal_padding,
                                      bubble_min.y + vertical_padding));
-    ImGui::PushTextWrapPos(bubble_min.x + horizontal_padding + max_text_width);
-    ImGui::TextWrapped("%s", message.content.c_str());
-    ImGui::PopTextWrapPos();
+    render_wrapped_selectable_text(message.content, max_text_width);
     ImGui::SetCursorScreenPos(row_pos);
     ImGui::Dummy(ImVec2(available_width, bubble_height));
 }
@@ -552,6 +761,11 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
             0.0f, available_height - composer_height - ImGui::GetStyle().ItemSpacing.y);
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         ImGui::BeginChild("##messages", ImVec2(0.0f, message_height), false);
+        const ImVec2 messages_min = ImGui::GetWindowPos();
+        const ImVec2 messages_size = ImGui::GetWindowSize();
+        const ImVec2 messages_max(messages_min.x + messages_size.x,
+                                  messages_min.y + messages_size.y);
+        transcript_selection.spans.clear();
         const bool was_at_bottom = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f;
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 6.0f));
         for (std::size_t message_index = 0; message_index < thread.messages.size(); ++message_index) {
@@ -593,6 +807,39 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
             ImGui::Dummy(ImVec2(1.0f, 9.0f));
         }
         ImGui::PopStyleVar();
+        ImGuiIO& io = ImGui::GetIO();
+        const bool mouse_over_messages = io.MousePos.x >= messages_min.x &&
+            io.MousePos.x < messages_max.x && io.MousePos.y >= messages_min.y &&
+            io.MousePos.y < messages_max.y;
+        if (mouse_over_messages && is_over_selectable_text(io.MousePos))
+            ImGui::SetMouseCursor(ImGuiMouseCursor_TextInput);
+        if (io.MouseClicked[0] && mouse_over_messages &&
+            !transcript_selection.spans.empty()) {
+            transcript_selection.anchor = text_endpoint_at(io.MousePos);
+            transcript_selection.focus = transcript_selection.anchor;
+            transcript_selection.tracking = true;
+            transcript_selection.dragged = false;
+        }
+        if (transcript_selection.tracking && io.MouseDown[0]) {
+            transcript_selection.focus = text_endpoint_at(io.MousePos);
+            transcript_selection.dragged = io.MouseDragMaxDistanceSqr[0] > 9.0f;
+        }
+        if (transcript_selection.tracking && io.MouseReleased[0]) {
+            transcript_selection.focus = text_endpoint_at(io.MousePos);
+            transcript_selection.tracking = false;
+        }
+        draw_text_selection();
+        if (io.MouseClicked[1] && mouse_over_messages)
+            ImGui::OpenPopup("##transcript-copy");
+        if (ImGui::BeginPopup("##transcript-copy")) {
+            if (ImGui::MenuItem("Copy", "Ctrl+C", false, has_text_selection()))
+                ImGui::SetClipboardText(selected_transcript_text().c_str());
+            ImGui::EndPopup();
+        }
+        if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) &&
+            io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_C) && !io.WantTextInput &&
+            has_text_selection())
+            ImGui::SetClipboardText(selected_transcript_text().c_str());
         if (was_at_bottom)
             ImGui::SetScrollHereY(1.0f);
         ImGui::EndChild();
@@ -623,6 +870,22 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
             "##message-input", &message_input,
             ImVec2(full_width - outer_padding * 2.0f, input_height),
             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine);
+        static std::string composer_context_selection;
+        if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(1)) {
+            composer_context_selection.clear();
+            ImGuiInputTextState* input_state = ImGui::GetInputTextState(ImGui::GetItemID());
+            if (input_state != nullptr && input_state->HasSelection()) {
+                const int first = input_state->GetSelectionStart();
+                const int last = input_state->GetSelectionEnd();
+                composer_context_selection = message_input.substr(first, last - first);
+            }
+        }
+        if (ImGui::BeginPopupContextItem("##composer-copy")) {
+            if (ImGui::MenuItem("Copy", "Ctrl+C", false,
+                                !composer_context_selection.empty()))
+                ImGui::SetClipboardText(composer_context_selection.c_str());
+            ImGui::EndPopup();
+        }
         ImGui::PopStyleColor(3);
         ImGui::PopStyleVar();
         const ImVec2 send_pos(frame_max.x - send_size - outer_padding,
