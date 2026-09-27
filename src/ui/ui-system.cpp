@@ -304,6 +304,14 @@ void UISystem::render_frame_to_backbuffer() {
         } catch (...) {
         }
     }
+    if (ImGui::BeginMainMenuBar()) {
+        if (ImGui::BeginMenu("File")) {
+            if (ImGui::MenuItem("Close"))
+                glfwSetWindowShouldClose(m_window, GLFW_TRUE);
+            ImGui::EndMenu();
+        }
+        ImGui::EndMainMenuBar();
+    }
     render_dock_area();
     render_threads_panel(m_state);
     render_chat_panel(m_state, m_message_input, m_provider, m_selected_model,
