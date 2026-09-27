@@ -139,8 +139,11 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
         }
     }
     ImGui::Begin("Chat");
-    if (!state.threads.empty() && state.selected_thread < state.threads.size()) {
-        ChatThread& thread = state.threads[state.selected_thread];
+    if (state.selected_project < state.projects.size() &&
+        state.selected_thread < state.projects[state.selected_project].threads.size()) {
+        ChatProject& project = state.projects[state.selected_project];
+        std::vector<ChatThread>& threads = project.threads;
+        ChatThread& thread = threads[state.selected_thread];
         constexpr float outer_padding = 8.0f;
         constexpr float input_height = 58.0f;
         constexpr float footer_height = 38.0f;
@@ -196,7 +199,7 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
             ImGui::Dummy(ImVec2(1.0f, 9.0f));
         }
         ImGui::PopStyleVar();
-        if (progress_conversation_id == std::to_string(state.selected_thread) && !progress_text.empty()) {
+        if (progress_conversation_id == thread.id && !progress_text.empty()) {
             if (ImGui::TreeNode("##thinking-progress", "Thinking")) {
                 markdown.print(progress_text.c_str(), progress_text.c_str() + progress_text.size());
                 ImGui::TreePop();
@@ -321,12 +324,12 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
             progress_text.clear();
         } else if (!is_generating && (enter || send_clicked) && !message_input.empty()) {
             if (state.selected_thread > 0) {
-                std::rotate(state.threads.begin(),
-                            state.threads.begin() + state.selected_thread,
-                            state.threads.begin() + state.selected_thread + 1);
+                std::rotate(threads.begin(),
+                            threads.begin() + state.selected_thread,
+                            threads.begin() + state.selected_thread + 1);
                 state.selected_thread = 0;
             }
-            ChatThread& destination = state.threads[state.selected_thread];
+            ChatThread& destination = threads[state.selected_thread];
             std::string prompt = std::move(message_input);
             message_input.clear();
             destination.messages.push_back({ChatMessageRole::User, prompt, {}, {}, {}});
@@ -334,6 +337,7 @@ void render_chat_panel(ApplicationState& state, std::string& message_input, Prov
             request.conversation_id = destination.id;
             request.prompt = std::move(prompt);
             request.history = destination.messages;
+            request.working_directory = project.directory;
             request.model = selected_model;
             request.reasoning_effort = selected_reasoning_effort;
             request.turn_id = next_turn_id++;

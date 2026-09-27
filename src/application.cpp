@@ -1,7 +1,9 @@
 #include "application.h"
 #include "base/result.h"
 #include <GLFW/glfw3.h>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <tinyfiledialogs.h>
 
 constexpr int kWindowWidth = 1440;
@@ -17,6 +19,16 @@ Result Application::init() {
     Result glfw_init_result = window_init();
     if (glfw_init_result.status == ResultStatus::Error) {
         return glfw_init_result;
+    }
+
+    if (!m_state.projects.empty() && m_state.projects.front().directory.empty()) {
+        std::error_code path_error;
+        m_state.projects.front().directory = std::filesystem::current_path(path_error);
+        if (path_error) {
+            window_deinit();
+            return result_error("Failed to determine the initial project directory: " +
+                                path_error.message());
+        }
     }
 
     Result state_result = m_state_store.open("Zenith.sqlite3");

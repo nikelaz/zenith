@@ -132,11 +132,17 @@ Result PersistentStore::open(const std::string& path) {
 
     Result initialization = execute(
         "PRAGMA foreign_keys = ON;"
+        "CREATE TABLE IF NOT EXISTS projects ("
+        "  position INTEGER PRIMARY KEY,"
+        "  directory TEXT NOT NULL,"
+        "  expanded INTEGER NOT NULL DEFAULT 1"
+        ");"
         "CREATE TABLE IF NOT EXISTS threads ("
         "  position INTEGER PRIMARY KEY,"
         "  title TEXT NOT NULL,"
         "  description TEXT NOT NULL,"
-        "  thread_id TEXT NOT NULL DEFAULT ''"
+        "  thread_id TEXT NOT NULL DEFAULT '',"
+        "  project_position INTEGER NOT NULL DEFAULT 0"
         ");"
         "CREATE TABLE IF NOT EXISTS messages ("
         "  thread_position INTEGER NOT NULL REFERENCES threads(position) ON DELETE CASCADE,"
@@ -172,6 +178,13 @@ Result PersistentStore::open(const std::string& path) {
         if (migration.status == ResultStatus::Error)
             return migration;
     }
+    if (!has_column(m_database, "threads", "project_position")) {
+        Result migration = execute(
+            "ALTER TABLE threads ADD COLUMN project_position INTEGER NOT NULL DEFAULT 0",
+            "Failed to add project ownership to saved threads");
+        if (migration.status == ResultStatus::Error)
+            return migration;
+    }
     return result_ok();
 }
 
@@ -186,25 +199,66 @@ Result PersistentStore::load(ApplicationState& state) {
     const int thread_count = sqlite3_column_int(count_statement.get(), 0);
     count_statement.reset();
 
-    if (thread_count == 0) {
-        return save(state);
+    if (!prepare(m_database, "SELECT COUNT(*) FROM projects", count_statement) ||
+        sqlite3_step(count_statement.get()) != SQLITE_ROW) {
+        return fail("Failed to inspect saved projects");
+    }
+    const int project_count = sqlite3_column_int(count_statement.get(), 0);
+    count_statement.reset();
+
+    const bool first_run = thread_count == 0 && project_count == 0;
+    if (project_count == 0) {
+        const std::string directory = state.projects.empty() || state.projects.front().directory.empty()
+            ? std::string(".")
+            : state.projects.front().directory.string();
+        Statement default_project_statement;
+        if (!prepare(m_database,
+                     "INSERT INTO projects(position, directory, expanded) VALUES(0, ?, 1)",
+                     default_project_statement)) {
+            return fail("Failed to initialize the default project");
+        }
+        sqlite3_bind_text(default_project_statement.get(), 1, directory.c_str(), -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(default_project_statement.get()) != SQLITE_DONE)
+            return fail("Failed to initialize the default project");
     }
 
-    state.threads.clear();
+    if (first_run)
+        return save(state);
+
+    state.projects.clear();
+    Statement project_statement;
     Statement thread_statement;
     Statement message_statement;
-    if (!prepare(m_database,
-                 "SELECT position, title, description, thread_id FROM threads ORDER BY position",
+    if (!prepare(m_database, "SELECT position, directory, expanded FROM projects ORDER BY position",
+                 project_statement) ||
+        !prepare(m_database,
+                 "SELECT position, title, description, thread_id, project_position FROM threads ORDER BY position",
                  thread_statement) ||
         !prepare(m_database,
                  "SELECT role, content, reasoning, segments FROM messages WHERE thread_position = ? ORDER BY position",
                  message_statement)) {
-        return fail("Failed to load saved threads");
+        return fail("Failed to load saved projects and threads");
     }
+
+    int project_result = SQLITE_ROW;
+    while ((project_result = sqlite3_step(project_statement.get())) == SQLITE_ROW) {
+        const int position = sqlite3_column_int(project_statement.get(), 0);
+        if (position < 0 || static_cast<std::size_t>(position) != state.projects.size())
+            return fail("Saved project positions are invalid");
+        ChatProject project;
+        project.directory = column_text(project_statement.get(), 1);
+        project.expanded = sqlite3_column_int(project_statement.get(), 2) != 0;
+        state.projects.push_back(std::move(project));
+    }
+    if (project_result != SQLITE_DONE || state.projects.empty())
+        return fail("Failed to load saved projects");
 
     int thread_result = SQLITE_ROW;
     while ((thread_result = sqlite3_step(thread_statement.get())) == SQLITE_ROW) {
         const int position = sqlite3_column_int(thread_statement.get(), 0);
+        const int project_position = sqlite3_column_int(thread_statement.get(), 4);
+        if (project_position < 0 || static_cast<std::size_t>(project_position) >= state.projects.size())
+            return fail("Saved thread refers to an unknown project");
         ChatThread thread{
             column_text(thread_statement.get(), 1),
             column_text(thread_statement.get(), 2),
@@ -239,7 +293,7 @@ Result PersistentStore::load(ApplicationState& state) {
 
         sqlite3_reset(message_statement.get());
         sqlite3_clear_bindings(message_statement.get());
-        state.threads.push_back(std::move(thread));
+        state.projects[static_cast<std::size_t>(project_position)].threads.push_back(std::move(thread));
     }
     if (thread_result != SQLITE_DONE) {
         return fail("Failed to load saved threads");
@@ -247,15 +301,33 @@ Result PersistentStore::load(ApplicationState& state) {
 
     Statement selected_statement;
     if (!prepare(m_database,
+                 "SELECT value FROM settings WHERE name = 'selected_project'",
+                 selected_statement)) {
+        return fail("Failed to load selected project");
+    }
+    int selected_result = sqlite3_step(selected_statement.get());
+    if (selected_result == SQLITE_ROW) {
+        const int selected = sqlite3_column_int(selected_statement.get(), 0);
+        state.selected_project = selected >= 0 &&
+            static_cast<std::size_t>(selected) < state.projects.size()
+            ? static_cast<std::size_t>(selected)
+            : 0;
+    } else if (selected_result == SQLITE_DONE) {
+        state.selected_project = 0;
+    } else {
+        return fail("Failed to load selected project");
+    }
+
+    if (!prepare(m_database,
                  "SELECT value FROM settings WHERE name = 'selected_thread'",
                  selected_statement)) {
         return fail("Failed to load selected thread");
     }
-    const int selected_result = sqlite3_step(selected_statement.get());
+    selected_result = sqlite3_step(selected_statement.get());
     if (selected_result == SQLITE_ROW) {
         const int selected = sqlite3_column_int(selected_statement.get(), 0);
-        state.selected_thread = selected >= 0 &&
-            static_cast<std::size_t>(selected) < state.threads.size()
+        const std::vector<ChatThread>& threads = state.projects[state.selected_project].threads;
+        state.selected_thread = selected >= 0 && static_cast<std::size_t>(selected) < threads.size()
             ? static_cast<std::size_t>(selected)
             : 0;
     } else if (selected_result == SQLITE_DONE) {
@@ -276,62 +348,90 @@ Result PersistentStore::save(const ApplicationState& state) {
         return error;
     };
 
-    Result result = execute("DELETE FROM messages; DELETE FROM threads;",
+    Result result = execute("DELETE FROM messages; DELETE FROM threads; DELETE FROM projects;",
                             "Failed to clear saved state");
     if (result.status == ResultStatus::Error) {
         return rollback(result);
     }
 
     Statement thread_statement;
+    Statement project_statement;
     Statement message_statement;
-    Statement setting_statement;
+    Statement selected_project_statement;
+    Statement selected_thread_statement;
     if (!prepare(m_database,
-                 "INSERT INTO threads(position, title, description, thread_id) VALUES(?, ?, ?, ?)",
+                 "INSERT INTO projects(position, directory, expanded) VALUES(?, ?, ?)",
+                 project_statement) ||
+        !prepare(m_database,
+                 "INSERT INTO threads(position, title, description, thread_id, project_position) VALUES(?, ?, ?, ?, ?)",
                  thread_statement) ||
         !prepare(m_database,
                  "INSERT INTO messages(thread_position, position, role, content, reasoning, segments) VALUES(?, ?, ?, ?, ?, ?)",
                  message_statement) ||
         !prepare(m_database,
+                 "INSERT INTO settings(name, value) VALUES('selected_project', ?) "
+                 "ON CONFLICT(name) DO UPDATE SET value = excluded.value",
+                 selected_project_statement) ||
+        !prepare(m_database,
                  "INSERT INTO settings(name, value) VALUES('selected_thread', ?) "
                  "ON CONFLICT(name) DO UPDATE SET value = excluded.value",
-                 setting_statement)) {
+                 selected_thread_statement)) {
         return rollback(fail("Failed to prepare state save"));
     }
 
-    for (std::size_t thread_index = 0; thread_index < state.threads.size(); ++thread_index) {
-        const ChatThread& thread = state.threads[thread_index];
-        sqlite3_bind_int(thread_statement.get(), 1, static_cast<int>(thread_index));
-        sqlite3_bind_text(thread_statement.get(), 2, thread.title.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(thread_statement.get(), 3, thread.description.c_str(), -1, SQLITE_TRANSIENT);
-        sqlite3_bind_text(thread_statement.get(), 4, thread.id.c_str(), -1, SQLITE_TRANSIENT);
-        if (sqlite3_step(thread_statement.get()) != SQLITE_DONE) {
-            return rollback(fail("Failed to save thread"));
-        }
-        sqlite3_reset(thread_statement.get());
-        sqlite3_clear_bindings(thread_statement.get());
+    int thread_position = 0;
+    for (std::size_t project_index = 0; project_index < state.projects.size(); ++project_index) {
+        const ChatProject& project = state.projects[project_index];
+        const std::string directory = project.directory.string();
+        sqlite3_bind_int(project_statement.get(), 1, static_cast<int>(project_index));
+        sqlite3_bind_text(project_statement.get(), 2, directory.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int(project_statement.get(), 3, project.expanded ? 1 : 0);
+        if (sqlite3_step(project_statement.get()) != SQLITE_DONE)
+            return rollback(fail("Failed to save project"));
+        sqlite3_reset(project_statement.get());
+        sqlite3_clear_bindings(project_statement.get());
 
-        for (std::size_t message_index = 0; message_index < thread.messages.size(); ++message_index) {
-            const ChatMessage& message = thread.messages[message_index];
-            sqlite3_bind_int(message_statement.get(), 1, static_cast<int>(thread_index));
-            sqlite3_bind_int(message_statement.get(), 2, static_cast<int>(message_index));
-            sqlite3_bind_int(message_statement.get(), 3, static_cast<int>(message.role));
-            sqlite3_bind_text(message_statement.get(), 4, message.content.c_str(), -1, SQLITE_TRANSIENT);
-            sqlite3_bind_text(message_statement.get(), 5, message.reasoning.c_str(), -1, SQLITE_TRANSIENT);
-            const std::string segments = serialize_segments(message.segments).dump();
-            sqlite3_bind_text(message_statement.get(), 6, segments.c_str(), -1, SQLITE_TRANSIENT);
-            if (sqlite3_step(message_statement.get()) != SQLITE_DONE) {
-                return rollback(fail("Failed to save message"));
+        for (const ChatThread& thread : project.threads) {
+            sqlite3_bind_int(thread_statement.get(), 1, thread_position);
+            sqlite3_bind_text(thread_statement.get(), 2, thread.title.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(thread_statement.get(), 3, thread.description.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(thread_statement.get(), 4, thread.id.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(thread_statement.get(), 5, static_cast<int>(project_index));
+            if (sqlite3_step(thread_statement.get()) != SQLITE_DONE)
+                return rollback(fail("Failed to save thread"));
+            sqlite3_reset(thread_statement.get());
+            sqlite3_clear_bindings(thread_statement.get());
+
+            for (std::size_t message_index = 0; message_index < thread.messages.size(); ++message_index) {
+                const ChatMessage& message = thread.messages[message_index];
+                sqlite3_bind_int(message_statement.get(), 1, thread_position);
+                sqlite3_bind_int(message_statement.get(), 2, static_cast<int>(message_index));
+                sqlite3_bind_int(message_statement.get(), 3, static_cast<int>(message.role));
+                sqlite3_bind_text(message_statement.get(), 4, message.content.c_str(), -1, SQLITE_TRANSIENT);
+                sqlite3_bind_text(message_statement.get(), 5, message.reasoning.c_str(), -1, SQLITE_TRANSIENT);
+                const std::string segments = serialize_segments(message.segments).dump();
+                sqlite3_bind_text(message_statement.get(), 6, segments.c_str(), -1, SQLITE_TRANSIENT);
+                if (sqlite3_step(message_statement.get()) != SQLITE_DONE)
+                    return rollback(fail("Failed to save message"));
+                sqlite3_reset(message_statement.get());
+                sqlite3_clear_bindings(message_statement.get());
             }
-            sqlite3_reset(message_statement.get());
-            sqlite3_clear_bindings(message_statement.get());
+            ++thread_position;
         }
     }
 
-    const std::size_t selected_thread = state.selected_thread < state.threads.size()
+    const std::size_t selected_project = state.selected_project < state.projects.size()
+        ? state.selected_project
+        : 0;
+    const std::size_t selected_thread = !state.projects.empty() &&
+        state.selected_thread < state.projects[selected_project].threads.size()
         ? state.selected_thread
         : 0;
-    sqlite3_bind_int(setting_statement.get(), 1, static_cast<int>(selected_thread));
-    if (sqlite3_step(setting_statement.get()) != SQLITE_DONE) {
+    sqlite3_bind_int(selected_project_statement.get(), 1, static_cast<int>(selected_project));
+    if (sqlite3_step(selected_project_statement.get()) != SQLITE_DONE)
+        return rollback(fail("Failed to save selected project"));
+    sqlite3_bind_int(selected_thread_statement.get(), 1, static_cast<int>(selected_thread));
+    if (sqlite3_step(selected_thread_statement.get()) != SQLITE_DONE) {
         return rollback(fail("Failed to save selected thread"));
     }
 

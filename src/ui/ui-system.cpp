@@ -212,9 +212,18 @@ void UISystem::render_frame_to_backbuffer() {
 
     for (const Event& event : m_provider.poll_events(&m_provider)) {
         try {
-            const auto thread = std::find_if(m_state.threads.begin(), m_state.threads.end(),
-                [&event](const ChatThread& value) { return value.id == event.conversation_id; });
-            if (thread == m_state.threads.end())
+            ChatThread* thread = nullptr;
+            for (ChatProject& project : m_state.projects) {
+                const auto match = std::find_if(project.threads.begin(), project.threads.end(),
+                    [&event](const ChatThread& value) {
+                        return value.id == event.conversation_id;
+                    });
+                if (match != project.threads.end()) {
+                    thread = &*match;
+                    break;
+                }
+            }
+            if (thread == nullptr)
                 continue;
             auto& messages = thread->messages;
             if (event.kind == EventKind::ReasoningSummaryDelta ||

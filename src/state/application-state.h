@@ -2,6 +2,7 @@
 #define APPLICATION_STATE_H
 
 #include <cstddef>
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
@@ -43,21 +44,34 @@ struct ChatThread {
     std::vector<ChatMessage> messages;
 };
 
+struct ChatProject {
+    std::filesystem::path directory;
+    bool expanded = true;
+    std::vector<ChatThread> threads;
+};
+
 struct ApplicationState {
-    std::vector<ChatThread> threads = {
+    std::vector<ChatProject> projects = {
         {
-            "Project setup",
-            "Getting the application structure and core systems in place.",
-            "project-setup",
-            {}
-        },
-        {
-            "UI layout",
-            "Planning the workspace panels and how they fit together.",
-            "ui-layout",
-            {}
+            {},
+            true,
+            {
+                {
+                    "Project setup",
+                    "Getting the application structure and core systems in place.",
+                    "project-setup",
+                    {}
+                },
+                {
+                    "UI layout",
+                    "Planning the workspace panels and how they fit together.",
+                    "ui-layout",
+                    {}
+                },
+            },
         },
     };
+    std::size_t selected_project = 0;
     std::size_t selected_thread = 0;
 };
 
