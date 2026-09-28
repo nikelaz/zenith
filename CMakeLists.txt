@@ -97,6 +97,9 @@ add_executable(Zenith
     third_party/tinyfiledialogs/tinyfiledialogs.c
 )
 if(WIN32)
+    file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/zenith.ico" ZENITH_WINDOWS_ICON_PATH)
+    configure_file(src/platform/zenith.rc.in "${CMAKE_CURRENT_BINARY_DIR}/zenith.rc" @ONLY)
+    target_sources(Zenith PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/zenith.rc")
     set_target_properties(Zenith PROPERTIES WIN32_EXECUTABLE TRUE)
 endif()
 if(APPLE)
