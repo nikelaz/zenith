@@ -2,6 +2,7 @@
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
+#include <fcntl.h>
 #include <string>
 #include <system_error>
 #include <sys/types.h>
@@ -59,7 +60,8 @@ std::filesystem::path child_process_resolve_executable(
 Result child_process_start(
     ChildProcess* process, const std::filesystem::path& executable,
     const std::vector<std::string>& arguments, const char* process_name,
-    const std::vector<ChildProcessEnvironmentVariable>& environment) {
+    const std::vector<ChildProcessEnvironmentVariable>& environment,
+    const std::filesystem::path& error_output_path) {
     *process = ChildProcess{};
 
     std::vector<std::string> argument_strings;
@@ -82,23 +84,38 @@ Result child_process_start(
         return result_error(failure_message("create", process_name, " pipes"));
     }
 
+    const int error_output = error_output_path.empty()
+        ? -1 : open(error_output_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (!error_output_path.empty() && error_output < 0) {
+        close(input_pipe[0]);
+        close(input_pipe[1]);
+        close(output_pipe[0]);
+        close(output_pipe[1]);
+        return result_error(failure_message("open", process_name, " diagnostic output"));
+    }
+
     const pid_t pid = fork();
     if (pid < 0) {
         close(input_pipe[0]);
         close(input_pipe[1]);
         close(output_pipe[0]);
         close(output_pipe[1]);
+        if (error_output >= 0)
+            close(error_output);
         return result_error(failure_message("start", process_name));
     }
 
     if (pid == 0) {
         if (dup2(input_pipe[0], STDIN_FILENO) < 0 ||
-            dup2(output_pipe[1], STDOUT_FILENO) < 0)
+            dup2(output_pipe[1], STDOUT_FILENO) < 0 ||
+            (error_output >= 0 && dup2(error_output, STDERR_FILENO) < 0))
             _exit(127);
         close(input_pipe[0]);
         close(input_pipe[1]);
         close(output_pipe[0]);
         close(output_pipe[1]);
+        if (error_output >= 0 && error_output != STDERR_FILENO)
+            close(error_output);
         for (const ChildProcessEnvironmentVariable& variable : environment)
             setenv(variable.name.c_str(), variable.value.c_str(), 1);
         execvp(argument_values[0], argument_values.data());
@@ -107,6 +124,8 @@ Result child_process_start(
 
     close(input_pipe[0]);
     close(output_pipe[1]);
+    if (error_output >= 0)
+        close(error_output);
     process->process_id = static_cast<std::intptr_t>(pid);
     process->input = fdopen(input_pipe[1], "w");
     if (process->input == nullptr)

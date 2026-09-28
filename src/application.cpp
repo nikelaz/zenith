@@ -88,7 +88,9 @@ Result Application::init() {
     }
 
     m_providers.push_back(make_codex_provider());
-    m_providers.push_back(make_github_copilot_provider());
+    GitHubCopilotOptions copilot_options;
+    copilot_options.diagnostics_path = database_path.parent_path() / "diagnostics.jsonl";
+    m_providers.push_back(make_github_copilot_provider(&copilot_options));
     for (ProviderPtr& provider : m_providers) {
         Result provider_result = provider->start(provider.get());
         if (provider_result.status == ResultStatus::Error) {

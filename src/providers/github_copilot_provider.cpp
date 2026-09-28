@@ -3,8 +3,12 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <utility>
@@ -49,8 +53,93 @@ struct StreamContext {
     const TurnRequest* request;
 };
 
+std::string utc_timestamp() {
+    const std::time_t now = std::time(nullptr);
+    std::tm utc{};
+#ifdef _WIN32
+    gmtime_s(&utc, &now);
+#else
+    gmtime_r(&now, &utc);
+#endif
+    std::ostringstream timestamp;
+    timestamp << std::put_time(&utc, "%Y-%m-%dT%H:%M:%SZ");
+    return timestamp.str();
+}
+
+Json response_diagnostic(const Json& response) {
+    if (!response.is_object())
+        return Json::object();
+    Json diagnostic = Json::object();
+    if (response.contains("id"))
+        diagnostic["id"] = response["id"];
+    if (response.contains("error")) {
+        const Json& error = response["error"];
+        if (error.is_object()) {
+            if (error.contains("code"))
+                diagnostic["error"]["code"] = error["code"];
+            if (error.contains("message"))
+                diagnostic["error"]["message"] = error["message"];
+        } else if (error.is_string()) {
+            diagnostic["error"] = error;
+        }
+    }
+    const Json result = response.value("result", Json::object());
+    if (result.is_object() && result.contains("stopReason")) {
+        diagnostic["stop_reason_type"] = result["stopReason"].type_name();
+        diagnostic["stop_reason"] = result["stopReason"];
+    } else {
+        diagnostic["stop_reason"] = "<missing>";
+    }
+    return diagnostic;
+}
+
+std::string read_diagnostic_tail(const std::filesystem::path& path) {
+    if (path.empty())
+        return {};
+    std::ifstream input(path, std::ios::binary);
+    if (!input)
+        return {};
+    constexpr std::streamoff max_size = 32 * 1024;
+    input.seekg(0, std::ios::end);
+    const std::streamoff size = input.tellg();
+    if (size > max_size)
+        input.seekg(size - max_size, std::ios::beg);
+    else
+        input.seekg(0, std::ios::beg);
+    std::string content(static_cast<std::size_t>(std::min(size, max_size)), '\0');
+    input.read(content.data(), static_cast<std::streamsize>(content.size()));
+    return content;
+}
+
+void append_copilot_diagnostic(const GitHubCopilotOptions& options,
+                               const TurnRequest& request, const std::string& stage,
+                               const std::string& error, const Json& response,
+                               const std::filesystem::path& stderr_path) {
+    if (options.diagnostics_path.empty())
+        return;
+    std::error_code filesystem_error;
+    std::filesystem::create_directories(options.diagnostics_path.parent_path(), filesystem_error);
+    Json entry = {
+        {"timestamp", utc_timestamp()},
+        {"provider", "github_copilot"},
+        {"event", "turn_failed"},
+        {"stage", stage},
+        {"turn_id", request.turn_id},
+        {"conversation_id", request.conversation_id},
+        {"model", request.model.empty() ? options.default_model : request.model},
+        {"working_directory", request.working_directory.string()},
+        {"error", error},
+        {"acp_response", response_diagnostic(response)},
+        {"stderr_tail", read_diagnostic_tail(stderr_path)},
+    };
+    std::ofstream output(options.diagnostics_path, std::ios::app | std::ios::binary);
+    if (output)
+        output << entry.dump() << '\n';
+}
+
 Result start_copilot_process(const GitHubCopilotOptions* options, const std::string& model,
-                             const std::string& effort, ChildProcess* process) {
+                             const std::string& effort, ChildProcess* process,
+                             const std::filesystem::path& error_output_path = {}) {
     if (model.find_first_of("\"\\%!&|<>^\r\n") != std::string::npos ||
         effort.find_first_of("\"\\%!&|<>^\r\n") != std::string::npos)
         return result_error("Invalid GitHub Copilot model or effort identifier");
@@ -61,7 +150,7 @@ Result start_copilot_process(const GitHubCopilotOptions* options, const std::str
     if (!effort.empty())
         arguments.push_back("--effort=" + effort);
     return child_process_start(process, options->executable, arguments,
-                               "GitHub Copilot ACP server");
+                               "GitHub Copilot ACP server", {}, error_output_path);
 }
 
 bool write_message(FILE* input, const Json& message) {
@@ -209,6 +298,8 @@ bool wait_for_response(ChildProcess* process, int request_id, StreamContext* con
         }
         if (message.contains("id") && message["id"].is_number_integer() &&
             message["id"].get<int>() == request_id) {
+            if (response != nullptr)
+                *response = message;
             if (message.contains("error")) {
                 *error = string_value(message["error"], "message");
                 if (error->empty() && message["error"].is_string())
@@ -217,8 +308,6 @@ bool wait_for_response(ChildProcess* process, int request_id, StreamContext* con
                     *error = "GitHub Copilot ACP request failed";
                 return false;
             }
-            if (response != nullptr)
-                *response = std::move(message);
             return true;
         }
         handle_server_message(process, context, message);
@@ -464,11 +553,25 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
     child_process_ignore_sigpipe();
 
     const std::string model = request->model.empty() ? state->options.default_model : request->model;
+    std::filesystem::path stderr_path;
+    if (!state->options.diagnostics_path.empty()) {
+        std::error_code directory_error;
+        const std::filesystem::path directory = state->options.diagnostics_path.parent_path();
+        std::filesystem::create_directories(directory, directory_error);
+        if (!directory_error)
+            stderr_path = directory / ("copilot-turn-" + std::to_string(request->turn_id) +
+                                       ".stderr.tmp");
+    }
     ChildProcess process;
     Result result = start_copilot_process(&state->options, model, request->reasoning_effort,
-                                          &process);
+                                          &process, stderr_path);
     if (result.status == ResultStatus::Error) {
         child_process_stop(&process);
+        append_copilot_diagnostic(state->options, *request, "start", result.error, {},
+                                  stderr_path);
+        std::error_code remove_error;
+        if (!stderr_path.empty())
+            std::filesystem::remove(stderr_path, remove_error);
         return result;
     }
     {
@@ -480,9 +583,13 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
 
     StreamContext context{runtime, request};
     std::string error;
+    std::string stage = "initialize";
     bool embedded_context = false;
     Json initialize_response;
+    Json diagnostic_response;
     bool success = initialize_copilot(&process, &context, &initialize_response, &error);
+    if (!success)
+        diagnostic_response = initialize_response;
     if (success) {
         const Json capabilities = initialize_response.value("result", Json::object())
             .value("agentCapabilities", Json::object()).value("promptCapabilities", Json::object());
@@ -492,13 +599,18 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
     const std::filesystem::path cwd = session_working_directory(request, &path_error);
     if (path_error) {
         success = false;
+        stage = "working_directory";
         error = "Failed to determine the GitHub Copilot working directory: " +
                 path_error.message();
     }
 
     Json session;
-    if (success)
+    if (success) {
+        stage = "session_new";
         success = create_copilot_session(&process, &context, cwd, &session, &error);
+        if (!success)
+            diagnostic_response = session;
+    }
 
     std::string session_id;
     if (success) {
@@ -510,6 +622,7 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
     }
 
     if (success) {
+        stage = "session_prompt";
         Event event{EventKind::ProviderThreadStarted, request->conversation_id,
                     request->turn_id};
         event.provider_thread_id = session_id;
@@ -522,17 +635,33 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
                         {"prompt", copilot_prompt_content(request, embedded_context)}}},
         };
         Json response;
-        success = write_message(process.input, prompt) &&
-                  wait_for_response(&process, 3, &context, &response, &error);
+        success = write_message(process.input, prompt);
+        if (!success)
+            error = "Failed to write the GitHub Copilot ACP prompt request";
+        if (success)
+            success = wait_for_response(&process, 3, &context, &response, &error);
         if (success) {
-            const std::string stop_reason =
-                string_value(response.value("result", Json::object()), "stopReason");
-            if (stop_reason != "end_turn") {
+            const Json prompt_result = response.value("result", Json::object());
+            if (!prompt_result.is_object() || !prompt_result.contains("stopReason")) {
                 success = false;
-                error = stop_reason == "cancelled" ? "GitHub Copilot turn cancelled"
-                                                    : "GitHub Copilot turn stopped: " + stop_reason;
+                error = "GitHub Copilot ACP prompt response did not include a stop reason";
+            } else if (!prompt_result["stopReason"].is_string()) {
+                success = false;
+                error = "GitHub Copilot ACP prompt response had a non-string stop reason";
+            } else {
+                const std::string stop_reason = prompt_result["stopReason"].get<std::string>();
+                if (stop_reason != "end_turn") {
+                    success = false;
+                    error = stop_reason == "cancelled" ? "GitHub Copilot turn cancelled"
+                                                        : "GitHub Copilot turn stopped: " +
+                                                              (stop_reason.empty()
+                                                                   ? "(empty reason)"
+                                                                   : stop_reason);
+                }
             }
         }
+        if (!success)
+            diagnostic_response = response;
     }
 
     {
@@ -541,6 +670,14 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
             state->active_process = nullptr;
     }
     child_process_stop(&process);
+    if (!success) {
+        append_copilot_diagnostic(state->options, *request, stage,
+                                  error.empty() ? "GitHub Copilot ACP request failed" : error,
+                                  diagnostic_response, stderr_path);
+    }
+    std::error_code remove_error;
+    if (!stderr_path.empty())
+        std::filesystem::remove(stderr_path, remove_error);
     if (!success)
         return result_error(error.empty() ? "GitHub Copilot ACP request failed" : error);
     return result_ok();

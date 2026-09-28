@@ -85,7 +85,8 @@ std::filesystem::path child_process_resolve_executable(
 Result child_process_start(
     ChildProcess* process, const std::filesystem::path& executable,
     const std::vector<std::string>& arguments, const char* process_name,
-    const std::vector<ChildProcessEnvironmentVariable>& environment) {
+    const std::vector<ChildProcessEnvironmentVariable>& environment,
+    const std::filesystem::path& error_output_path) {
     *process = ChildProcess{};
 
     SECURITY_ATTRIBUTES security_attributes{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
@@ -110,9 +111,11 @@ Result child_process_start(
         return result_error(failure_message("prepare", process_name, " pipes"));
     }
 
-    HANDLE child_error = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                     &security_attributes, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
-                                     nullptr);
+    HANDLE child_error = error_output_path.empty()
+        ? CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                      &security_attributes, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr)
+        : CreateFileW(error_output_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+                      &security_attributes, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (child_error == INVALID_HANDLE_VALUE) {
         close_if_open(child_input);
         close_if_open(parent_input);

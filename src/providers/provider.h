@@ -154,6 +154,7 @@ struct CodexOptions {
 
 struct GitHubCopilotOptions {
     std::filesystem::path executable = "copilot";
+    std::filesystem::path diagnostics_path;
     std::string default_model = "auto";
     Result (*execute)(void*, const TurnRequest*, ProviderEventSink, void*) = nullptr;
     void* execute_context = nullptr;
