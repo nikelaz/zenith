@@ -13,6 +13,10 @@
 #include <system_error>
 #include <tinyfiledialogs.h>
 
+#ifdef _WIN32
+extern "C" void zenith_enable_win32_window_management(GLFWwindow* window);
+#endif
+
 constexpr int kWindowWidth = 1440;
 constexpr int kWindowHeight = 900;
 
@@ -151,6 +155,10 @@ Result Application::window_init() {
         glfwTerminate();
         return result_error("Failed to create application window");
     }
+
+#ifdef _WIN32
+    zenith_enable_win32_window_management(m_window);
+#endif
 
     glfwMakeContextCurrent(m_window);
     glfwSwapInterval(1);

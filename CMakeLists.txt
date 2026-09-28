@@ -30,6 +30,7 @@ if(GLFW_BUILD_WAYLAND)
 endif()
 if(GLFW_BUILD_WIN32)
     target_sources(glfw PRIVATE src/platform/glfw-win32-window-drag.c)
+    target_link_libraries(glfw PRIVATE comctl32 dwmapi)
 endif()
 
 find_package(OpenGL REQUIRED)
