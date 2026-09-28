@@ -1,10 +1,11 @@
+#define SDL_MAIN_HANDLED
+#include <SDL3/SDL_main.h>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
 #endif
-#include <GLFW/glfw3.h>
 #include "application.h"
 #include "base/result.h"
 #include <tinyfiledialogs.h>
@@ -16,6 +17,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 int main() {
 #endif
     Application app;
+    SDL_SetMainReady();
 
     Result app_init_result = app.init();
     if (app_init_result.status == ResultStatus::Error) {

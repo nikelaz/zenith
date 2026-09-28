@@ -6,12 +6,13 @@
 #include "providers/provider.h"
 #include "state/application-state.h"
 #include "ui/ui-system.h"
-#include <GLFW/glfw3.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_gpu.h>
 #include <optional>
 
 class Application {
 public:
-    GLFWwindow* m_window = nullptr;
+    SDL_Window* m_window = nullptr;
     std::optional<UISystem> m_ui;
 
     ~Application();
@@ -21,6 +22,8 @@ public:
 
 private:
     bool m_initialized = false;
+    bool m_quit_requested = false;
+    SDL_GPUDevice* m_gpu_device = nullptr;
     ApplicationState m_state;
     PersistentStore m_state_store;
     std::vector<ProviderPtr> m_providers;

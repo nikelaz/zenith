@@ -1,6 +1,6 @@
 #include "clipboard-image.h"
 #include "../process/child-process.h"
-#include <GLFW/glfw3.h>
+#include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -63,7 +63,8 @@ Result read_clipboard_command(const std::filesystem::path& executable,
 
 Result read_clipboard_image(ClipboardImage* image) {
     *image = {};
-    const bool wayland = glfwGetPlatform() == GLFW_PLATFORM_WAYLAND;
+    const char* video_driver = SDL_GetCurrentVideoDriver();
+    const bool wayland = video_driver != nullptr && std::string_view(video_driver) == "wayland";
     const auto executable = child_process_resolve_executable(wayland ? "wl-paste" : "xclip");
     if (executable.empty()) {
         return result_error(wayland

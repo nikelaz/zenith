@@ -13,27 +13,20 @@
 #include "chat-panel.h"
 #include "dock-area.h"
 #include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl3.h"
+#include "imgui_impl_sdl3.h"
+#include "imgui_impl_sdlgpu3.h"
 #include "threads-panel.h"
-#include <GLFW/glfw3.h>
 #include <algorithm>
 #include <cfloat>
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <iterator>
 #include <string>
 #include <system_error>
 #include <vector>
-
-#ifdef ZENITH_HAS_WAYLAND_WINDOW_DRAG
-extern "C" int zenith_begin_wayland_window_drag(GLFWwindow* window);
-#endif
-#ifdef ZENITH_HAS_WIN32_WINDOW_DRAG
-extern "C" int zenith_begin_win32_window_drag(GLFWwindow* window);
-#endif
 
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
@@ -99,22 +92,73 @@ ImFont* load_bundled_font(const char* family, const char* filename, bool pixel_s
     return ImGui::GetIO().Fonts->AddFontFromFileTTF(path.string().c_str(), font_size);
 }
 
-unsigned int create_icon_texture(int width, int height, const unsigned char* pixels) {
-    unsigned int texture = 0;
-    glGenTextures(1, &texture);
-    if (texture == 0)
-        return 0;
+SDL_GPUTexture* create_icon_texture(SDL_GPUDevice* device, int width, int height,
+                                    const unsigned char* pixels) {
+    const Uint32 byte_count = static_cast<Uint32>(width * height * 4);
+    SDL_GPUTextureCreateInfo texture_info{};
+    texture_info.type = SDL_GPU_TEXTURETYPE_2D;
+    texture_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    texture_info.width = static_cast<Uint32>(width);
+    texture_info.height = static_cast<Uint32>(height);
+    texture_info.layer_count_or_depth = 1;
+    texture_info.num_levels = 1;
+    texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &texture_info);
+    if (texture == nullptr)
+        return nullptr;
 
-    glBindTexture(GL_TEXTURE_2D, texture);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    constexpr GLint clamp_to_edge = 0x812F;
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, clamp_to_edge);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, clamp_to_edge);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA,
-                 GL_UNSIGNED_BYTE, pixels);
-    glBindTexture(GL_TEXTURE_2D, 0);
+    SDL_GPUTransferBufferCreateInfo transfer_info{};
+    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    transfer_info.size = byte_count;
+    SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(device, &transfer_info);
+    if (transfer == nullptr) {
+        SDL_ReleaseGPUTexture(device, texture);
+        return nullptr;
+    }
+    void* transfer_data = SDL_MapGPUTransferBuffer(device, transfer, false);
+    if (transfer_data == nullptr) {
+        SDL_ReleaseGPUTransferBuffer(device, transfer);
+        SDL_ReleaseGPUTexture(device, texture);
+        return nullptr;
+    }
+    std::memcpy(transfer_data, pixels, byte_count);
+    SDL_UnmapGPUTransferBuffer(device, transfer);
+
+    SDL_GPUCommandBuffer* command_buffer = SDL_AcquireGPUCommandBuffer(device);
+    if (command_buffer == nullptr) {
+        SDL_ReleaseGPUTransferBuffer(device, transfer);
+        SDL_ReleaseGPUTexture(device, texture);
+        return nullptr;
+    }
+    SDL_GPUCopyPass* copy_pass = SDL_BeginGPUCopyPass(command_buffer);
+    SDL_GPUTextureTransferInfo source{transfer, 0, static_cast<Uint32>(width),
+                                      static_cast<Uint32>(height)};
+    SDL_GPUTextureRegion destination{texture, 0, 0, 0, 0, 0,
+                                     static_cast<Uint32>(width),
+                                     static_cast<Uint32>(height), 1};
+    SDL_UploadToGPUTexture(copy_pass, &source, &destination, false);
+    SDL_EndGPUCopyPass(copy_pass);
+    if (!SDL_SubmitGPUCommandBuffer(command_buffer)) {
+        SDL_ReleaseGPUTransferBuffer(device, transfer);
+        SDL_ReleaseGPUTexture(device, texture);
+        return nullptr;
+    }
+    SDL_ReleaseGPUTransferBuffer(device, transfer);
     return texture;
+}
+
+ImTextureID texture_id(SDL_GPUTexture* texture) {
+    return static_cast<ImTextureID>(reinterpret_cast<intptr_t>(texture));
+}
+
+float window_content_scale(SDL_Window* window) {
+    // ImGui sizes use window coordinates, so remove SDL's pixel density component.
+    const float display_scale = SDL_GetWindowDisplayScale(window);
+    const float pixel_density = SDL_GetWindowPixelDensity(window);
+    if (display_scale <= 0.0f || pixel_density <= 0.0f)
+        return 1.0f;
+    return display_scale / pixel_density;
 }
 
 enum class WindowControlIcon {
@@ -252,62 +296,12 @@ void set_premiere_theme(const ApplicationState& state) {
     style.FontScaleMain = state.ui_scale;
 }
 
-template <typename EventFn>
-void add_settings_input(GLFWwindow* window, EventFn&& add_event) {
-    ImGuiContext* context = static_cast<ImGuiContext*>(glfwGetWindowUserPointer(window));
-    if (context == nullptr)
-        return;
 
-    ImGuiContext* previous_context = ImGui::GetCurrentContext();
-    ImGui::SetCurrentContext(context);
-    add_event(ImGui::GetIO());
-    ImGui::SetCurrentContext(previous_context);
 }
 
-void settings_cursor_position_callback(GLFWwindow* window, double x, double y) {
-    add_settings_input(window, [x, y](ImGuiIO& io) {
-        io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
-    });
-}
-
-void settings_cursor_enter_callback(GLFWwindow* window, int entered) {
-    if (entered == GLFW_TRUE) {
-        double x;
-        double y;
-        glfwGetCursorPos(window, &x, &y);
-        settings_cursor_position_callback(window, x, y);
-    } else {
-        add_settings_input(window, [](ImGuiIO& io) {
-            io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
-        });
-    }
-}
-
-void settings_mouse_button_callback(GLFWwindow* window, int button, int action, int mods) {
-    (void)mods;
-    if (button < 0 || button >= ImGuiMouseButton_COUNT)
-        return;
-    add_settings_input(window, [button, action](ImGuiIO& io) {
-        io.AddMouseButtonEvent(button, action == GLFW_PRESS);
-    });
-}
-
-void settings_scroll_callback(GLFWwindow* window, double x_offset, double y_offset) {
-    add_settings_input(window, [x_offset, y_offset](ImGuiIO& io) {
-        io.AddMouseWheelEvent(static_cast<float>(x_offset), static_cast<float>(y_offset));
-    });
-}
-
-void settings_focus_callback(GLFWwindow* window, int focused) {
-    add_settings_input(window, [focused](ImGuiIO& io) {
-        io.AddFocusEvent(focused == GLFW_TRUE);
-    });
-}
-}
-
-UISystem::UISystem(GLFWwindow* window, ApplicationState& state,
-                   std::vector<ProviderPtr>& providers)
-    : m_window(window), m_state(state), m_providers(providers),
+UISystem::UISystem(SDL_Window* window, SDL_GPUDevice* gpu_device,
+                   ApplicationState& state, std::vector<ProviderPtr>& providers)
+    : m_window(window), m_gpu_device(gpu_device), m_state(state), m_providers(providers),
       m_chat_panel_state(), m_usage_snapshots(providers.size()),
       m_usage_loading(providers.size(), false) {
     m_chat_panel_state.selected_model = providers.empty()
@@ -326,10 +320,7 @@ UISystem::UISystem(GLFWwindow* window, ApplicationState& state,
 }
 
 Result UISystem::init() {
-    float content_scale_x = 1.0f;
-    float content_scale_y = 1.0f;
-    glfwGetWindowContentScale(m_window, &content_scale_x, &content_scale_y);
-    m_dpi_scale = std::max(content_scale_x, content_scale_y);
+    m_dpi_scale = window_content_scale(m_window);
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -346,28 +337,70 @@ Result UISystem::init() {
     m_chat_panel_state.monospace_font = load_bundled_font(
         "JetBrains-Mono", "JetBrainsMono-Regular.ttf", true, font_config.SizePixels);
 
-    if (!ImGui_ImplGlfw_InitForOpenGL(m_window, true)) {
+    if (!ImGui_ImplSDL3_InitForSDLGPU(m_window)) {
         ImGui::DestroyContext();
         m_main_context = nullptr;
-        return result_error("Failed to initialize Dear ImGui Glfw OpenGL backend");
+        return result_error("Failed to initialize Dear ImGui SDL3 backend");
     }
 
-    if (!ImGui_ImplOpenGL3_Init("#version 150")) {
-        ImGui_ImplGlfw_Shutdown();
+    ImGui_ImplSDLGPU3_InitInfo init_info{};
+    init_info.Device = m_gpu_device;
+    init_info.ColorTargetFormat = SDL_GetGPUSwapchainTextureFormat(m_gpu_device, m_window);
+    init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
+    init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+    init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
+    if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
+        ImGui_ImplSDL3_Shutdown();
         ImGui::DestroyContext();
         m_main_context = nullptr;
-        return result_error("Failed to initialize Dear ImGui OpenGL 3 backend");
+        return result_error("Failed to initialize Dear ImGui SDL GPU backend");
     }
 
-    m_menu_icon_texture = create_icon_texture(application_icon::width,
+    m_menu_icon_texture = create_icon_texture(m_gpu_device, application_icon::width,
         application_icon::height, application_icon::pixels);
     m_chat_panel_state.attachment_icon_texture = create_icon_texture(
-        file_attachment_icon::width, file_attachment_icon::height,
+        m_gpu_device, file_attachment_icon::width, file_attachment_icon::height,
         file_attachment_icon::pixels);
     m_chat_panel_state.paperclip_icon_texture = create_icon_texture(
-        paperclip_icon::width, paperclip_icon::height, paperclip_icon::pixels);
+        m_gpu_device, paperclip_icon::width, paperclip_icon::height,
+        paperclip_icon::pixels);
+    if (m_menu_icon_texture == nullptr || m_chat_panel_state.attachment_icon_texture == nullptr ||
+        m_chat_panel_state.paperclip_icon_texture == nullptr) {
+        deinit();
+        return result_error(std::string("Failed to create UI textures: ") + SDL_GetError());
+    }
+    SDL_SetWindowHitTest(m_window, title_bar_hit_test, this);
     m_initialized = true;
     return result_ok();
+}
+
+SDL_HitTestResult SDLCALL UISystem::title_bar_hit_test(SDL_Window*, const SDL_Point* point,
+                                                       void* user_data) {
+    auto* ui = static_cast<UISystem*>(user_data);
+    if (point->y < 0 || point->y >= ui->m_title_bar_height)
+        return SDL_HITTEST_NORMAL;
+    for (const SDL_Rect& bounds : ui->m_title_bar_interactive_bounds) {
+        if (point->x >= bounds.x && point->x < bounds.x + bounds.w &&
+            point->y >= bounds.y && point->y < bounds.y + bounds.h)
+            return SDL_HITTEST_NORMAL;
+    }
+    return SDL_HITTEST_DRAGGABLE;
+}
+
+void UISystem::process_event(const SDL_Event& event) {
+    if (m_main_context != nullptr) {
+        ImGui::SetCurrentContext(m_main_context);
+        ImGui_ImplSDL3_ProcessEvent(&event);
+    }
+    if (m_settings_context != nullptr) {
+        ImGui::SetCurrentContext(m_settings_context);
+        ImGui_ImplSDL3_ProcessEvent(&event);
+    }
+    if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && m_settings_window != nullptr &&
+        event.window.windowID == SDL_GetWindowID(m_settings_window))
+        m_close_settings_requested = true;
+    if (m_main_context != nullptr)
+        ImGui::SetCurrentContext(m_main_context);
 }
 
 void UISystem::apply_appearance_settings() {
@@ -377,6 +410,7 @@ void UISystem::apply_appearance_settings() {
     appearance_state.ui_scale *= m_dpi_scale;
     set_premiere_theme(appearance_state);
     if (m_settings_context != nullptr) {
+        appearance_state.ui_scale = m_state.ui_scale * m_settings_dpi_scale;
         ImGui::SetCurrentContext(m_settings_context);
         set_premiere_theme(appearance_state);
         ImGui::SetCurrentContext(m_main_context);
@@ -391,46 +425,60 @@ void UISystem::deinit() {
         return;
 
     close_settings_window();
-    glfwMakeContextCurrent(m_window);
     ImGui::SetCurrentContext(m_main_context);
-    if (m_menu_icon_texture != 0) {
-        glDeleteTextures(1, &m_menu_icon_texture);
-        m_menu_icon_texture = 0;
+    if (m_menu_icon_texture != nullptr) {
+        SDL_ReleaseGPUTexture(m_gpu_device, m_menu_icon_texture);
+        m_menu_icon_texture = nullptr;
     }
-    if (m_chat_panel_state.attachment_icon_texture != 0) {
-        glDeleteTextures(1, &m_chat_panel_state.attachment_icon_texture);
-        m_chat_panel_state.attachment_icon_texture = 0;
+    if (m_chat_panel_state.attachment_icon_texture != nullptr) {
+        SDL_ReleaseGPUTexture(m_gpu_device, m_chat_panel_state.attachment_icon_texture);
+        m_chat_panel_state.attachment_icon_texture = nullptr;
     }
-    if (m_chat_panel_state.paperclip_icon_texture != 0) {
-        glDeleteTextures(1, &m_chat_panel_state.paperclip_icon_texture);
-        m_chat_panel_state.paperclip_icon_texture = 0;
+    if (m_chat_panel_state.paperclip_icon_texture != nullptr) {
+        SDL_ReleaseGPUTexture(m_gpu_device, m_chat_panel_state.paperclip_icon_texture);
+        m_chat_panel_state.paperclip_icon_texture = nullptr;
     }
-    ImGui_ImplOpenGL3_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
+    ImGui_ImplSDLGPU3_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
     m_main_context = nullptr;
     m_initialized = false;
 }
 
 void UISystem::new_frame() {
-    glfwMakeContextCurrent(m_window);
     ImGui::SetCurrentContext(m_main_context);
-    ImGui_ImplOpenGL3_NewFrame();
-    ImGui_ImplGlfw_NewFrame();
+    ImGui_ImplSDLGPU3_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 }
 
 void UISystem::prepare_backbuffer() {
     ImGui::Render();
 
-    int width;
-    int height;
-    glfwGetFramebufferSize(m_window, &width, &height);
-    glViewport(0, 0, width, height);
-    // TODO: This color should be a part of the pallete/theme
-    glClearColor(0.075f, 0.075f, 0.075f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    ImDrawData* draw_data = ImGui::GetDrawData();
+    SDL_GPUCommandBuffer* command_buffer = SDL_AcquireGPUCommandBuffer(m_gpu_device);
+    if (command_buffer == nullptr)
+        return;
+    SDL_GPUTexture* swapchain_texture = nullptr;
+    if (!SDL_WaitAndAcquireGPUSwapchainTexture(command_buffer, m_window,
+                                               &swapchain_texture, nullptr, nullptr)) {
+        SDL_CancelGPUCommandBuffer(command_buffer);
+        return;
+    }
+    if (swapchain_texture != nullptr && draw_data->DisplaySize.x > 0.0f &&
+        draw_data->DisplaySize.y > 0.0f) {
+        ImGui_ImplSDLGPU3_PrepareDrawData(draw_data, command_buffer);
+        SDL_GPUColorTargetInfo target_info{};
+        target_info.texture = swapchain_texture;
+        target_info.clear_color = SDL_FColor{0.075f, 0.075f, 0.075f, 1.0f};
+        target_info.load_op = SDL_GPU_LOADOP_CLEAR;
+        target_info.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_GPURenderPass* render_pass = SDL_BeginGPURenderPass(command_buffer,
+                                                                &target_info, 1, nullptr);
+        ImGui_ImplSDLGPU3_RenderDrawData(draw_data, command_buffer, render_pass);
+        SDL_EndGPURenderPass(render_pass);
+    }
+    SDL_SubmitGPUCommandBuffer(command_buffer);
 }
 
 void UISystem::render_frame_to_backbuffer() {
@@ -439,15 +487,11 @@ void UISystem::render_frame_to_backbuffer() {
         open_settings_window();
     }
 
-    float content_scale_x = 1.0f;
-    float content_scale_y = 1.0f;
-    glfwGetWindowContentScale(m_window, &content_scale_x, &content_scale_y);
-    m_dpi_scale = std::max(content_scale_x, content_scale_y);
+    m_dpi_scale = window_content_scale(m_window);
     if (!m_appearance_edit_active &&
         (m_applied_base_font_size != m_state.base_font_size ||
          m_applied_ui_scale != m_state.ui_scale ||
          m_applied_dpi_scale != m_dpi_scale)) {
-        glfwMakeContextCurrent(m_window);
         ImGui::SetCurrentContext(m_main_context);
         apply_appearance_settings();
     }
@@ -551,11 +595,11 @@ void UISystem::render_frame_to_backbuffer() {
         const ImVec2 menu_row_pos = ImGui::GetCursorScreenPos();
         const float menu_row_height = ImGui::GetFrameHeight();
         float next_item_x = menu_row_pos.x;
-        if (m_menu_icon_texture != 0) {
+        if (m_menu_icon_texture != nullptr) {
             const float icon_size = ui_size(16.0f);
             const float icon_label_spacing = ui_size(6.0f);
             ImGui::GetWindowDrawList()->AddImage(
-                ImTextureRef(static_cast<ImTextureID>(m_menu_icon_texture)),
+                ImTextureRef(texture_id(m_menu_icon_texture)),
                 ImVec2(next_item_x, menu_row_pos.y + (menu_row_height - icon_size) * 0.5f),
                 ImVec2(next_item_x + icon_size,
                        menu_row_pos.y + (menu_row_height + icon_size) * 0.5f));
@@ -570,17 +614,34 @@ void UISystem::render_frame_to_backbuffer() {
             next_item_x += label_size.x + ui_size(12.0f);
             ImGui::SetCursorScreenPos(ImVec2(next_item_x, menu_row_pos.y));
         }
-        if (ImGui::BeginMenu("File")) {
+        const bool file_menu_open = ImGui::BeginMenu("File");
+        const ImVec2 file_menu_min = ImGui::GetItemRectMin();
+        const ImVec2 file_menu_max = ImGui::GetItemRectMax();
+        m_title_bar_interactive_bounds[0] = SDL_Rect{
+            static_cast<int>(file_menu_min.x), static_cast<int>(file_menu_min.y),
+            static_cast<int>(file_menu_max.x - file_menu_min.x),
+            static_cast<int>(file_menu_max.y - file_menu_min.y)};
+        if (file_menu_open) {
             if (ImGui::MenuItem("Open Project..."))
                 open_project_dialog(m_state);
             ImGui::Separator();
             if (ImGui::MenuItem("Settings"))
                 m_open_settings_requested = true;
-            if (ImGui::MenuItem("Close"))
-                glfwSetWindowShouldClose(m_window, GLFW_TRUE);
+            if (ImGui::MenuItem("Close")) {
+                SDL_Event quit_event{};
+                quit_event.type = SDL_EVENT_QUIT;
+                SDL_PushEvent(&quit_event);
+            }
             ImGui::EndMenu();
         }
-        if (ImGui::BeginMenu("View")) {
+        const bool view_menu_open = ImGui::BeginMenu("View");
+        const ImVec2 view_menu_min = ImGui::GetItemRectMin();
+        const ImVec2 view_menu_max = ImGui::GetItemRectMax();
+        m_title_bar_interactive_bounds[1] = SDL_Rect{
+            static_cast<int>(view_menu_min.x), static_cast<int>(view_menu_min.y),
+            static_cast<int>(view_menu_max.x - view_menu_min.x),
+            static_cast<int>(view_menu_max.y - view_menu_min.y)};
+        if (view_menu_open) {
             ImGui::MenuItem("Threads", nullptr, &m_threads_panel_open);
             ImGui::MenuItem("Chat", nullptr, &m_chat_panel_open);
             ImGui::MenuItem("Usage & Limits", nullptr, &m_usage_panel_open);
@@ -609,75 +670,28 @@ void UISystem::render_frame_to_backbuffer() {
         ImGui::SetCursorScreenPos(ImVec2(controls_left, menu_row_pos.y));
         if (window_control_button("##MinimizeWindow", WindowControlIcon::Minimize,
                                   control_width, menu_row_height))
-            glfwIconifyWindow(m_window);
+            SDL_MinimizeWindow(m_window);
         ImGui::SetCursorScreenPos(ImVec2(controls_left + control_width,
                                          menu_row_pos.y));
         if (window_control_button("##MaximizeWindow", WindowControlIcon::Maximize,
                                   control_width, menu_row_height)) {
-            if (glfwGetWindowAttrib(m_window, GLFW_MAXIMIZED))
-                glfwRestoreWindow(m_window);
+            if ((SDL_GetWindowFlags(m_window) & SDL_WINDOW_MAXIMIZED) != 0)
+                SDL_RestoreWindow(m_window);
             else
-                glfwMaximizeWindow(m_window);
+                SDL_MaximizeWindow(m_window);
         }
         ImGui::SetCursorScreenPos(ImVec2(controls_left + control_width * 2.0f,
                                          menu_row_pos.y));
         if (window_control_button("##CloseWindow", WindowControlIcon::Close,
-                                  control_width, menu_row_height))
-            glfwSetWindowShouldClose(m_window, GLFW_TRUE);
-
-        const ImVec2 mouse_pos = ImGui::GetMousePos();
-        const ImVec2 menu_window_max(menu_window_pos.x + menu_window_size.x,
-                                     menu_window_pos.y + menu_window_size.y);
-        const bool mouse_in_title_bar =
-            mouse_pos.x >= menu_window_pos.x && mouse_pos.x < menu_window_max.x &&
-            mouse_pos.y >= menu_window_pos.y && mouse_pos.y < menu_window_max.y;
-        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            m_dragging_title_bar = mouse_in_title_bar &&
-                                   !ImGui::IsAnyItemHovered() &&
-                                   !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopup);
-#ifdef ZENITH_HAS_WAYLAND_WINDOW_DRAG
-            if (m_dragging_title_bar && glfwGetPlatform() == GLFW_PLATFORM_WAYLAND) {
-                zenith_begin_wayland_window_drag(m_window);
-                m_dragging_title_bar = false;
-            }
-#endif
-#ifdef ZENITH_HAS_WIN32_WINDOW_DRAG
-            if (m_dragging_title_bar && glfwGetPlatform() == GLFW_PLATFORM_WIN32) {
-                m_dragging_title_bar =
-                    zenith_begin_win32_window_drag(m_window) != GLFW_TRUE;
-            }
-#endif
-            if (m_dragging_title_bar) {
-                glfwGetWindowPos(m_window, &m_title_bar_drag_window_x,
-                                 &m_title_bar_drag_window_y);
-                double cursor_x = 0.0;
-                double cursor_y = 0.0;
-                glfwGetCursorPos(m_window, &cursor_x, &cursor_y);
-                m_title_bar_drag_cursor_x = m_title_bar_drag_window_x + cursor_x;
-                m_title_bar_drag_cursor_y = m_title_bar_drag_window_y + cursor_y;
-            }
+                                  control_width, menu_row_height)) {
+            SDL_Event quit_event{};
+            quit_event.type = SDL_EVENT_QUIT;
+            SDL_PushEvent(&quit_event);
         }
-        if (m_dragging_title_bar) {
-            if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                int window_x = 0;
-                int window_y = 0;
-                double cursor_x = 0.0;
-                double cursor_y = 0.0;
-                glfwGetWindowPos(m_window, &window_x, &window_y);
-                glfwGetCursorPos(m_window, &cursor_x, &cursor_y);
-                const double cursor_screen_x = window_x + cursor_x;
-                const double cursor_screen_y = window_y + cursor_y;
-                const int target_x = m_title_bar_drag_window_x +
-                    static_cast<int>(std::lround(cursor_screen_x -
-                                                 m_title_bar_drag_cursor_x));
-                const int target_y = m_title_bar_drag_window_y +
-                    static_cast<int>(std::lround(cursor_screen_y -
-                                                 m_title_bar_drag_cursor_y));
-                glfwSetWindowPos(m_window, target_x, target_y);
-            } else {
-                m_dragging_title_bar = false;
-            }
-        }
+        m_title_bar_height = static_cast<int>(std::ceil(menu_row_height));
+        m_title_bar_interactive_bounds[2] = SDL_Rect{
+            static_cast<int>(controls_left), 0,
+            static_cast<int>(control_width * control_count), m_title_bar_height};
         ImGui::EndMainMenuBar();
     }
     render_dock_area();
@@ -769,54 +783,76 @@ void UISystem::render_frame_to_backbuffer() {
 
 bool UISystem::open_settings_window() {
     if (m_settings_window != nullptr) {
-        glfwShowWindow(m_settings_window);
-        glfwFocusWindow(m_settings_window);
+        SDL_ShowWindow(m_settings_window);
+        SDL_RaiseWindow(m_settings_window);
         return true;
     }
 
-    glfwMakeContextCurrent(m_window);
-    glfwDefaultWindowHints();
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-#ifdef _WIN32
-    glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
-#endif
-#ifdef __APPLE__
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-#endif
-
-    GLFWwindow* settings_window = glfwCreateWindow(760, 560, "Zenith Settings", nullptr,
-                                                   m_window);
-    if (settings_window == nullptr) {
-        glfwMakeContextCurrent(m_window);
+    m_settings_window = SDL_CreateWindow("Zenith Settings", 760, 560,
+                                         SDL_WINDOW_RESIZABLE |
+                                             SDL_WINDOW_HIGH_PIXEL_DENSITY |
+                                             SDL_WINDOW_HIDDEN);
+    if (m_settings_window == nullptr)
+        return false;
+    if (!SDL_ClaimWindowForGPUDevice(m_gpu_device, m_settings_window)) {
+        SDL_DestroyWindow(m_settings_window);
+        m_settings_window = nullptr;
+        return false;
+    }
+    if (!SDL_SetGPUSwapchainParameters(m_gpu_device, m_settings_window,
+                                      SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+                                      SDL_GPU_PRESENTMODE_VSYNC)) {
+        SDL_ReleaseWindowFromGPUDevice(m_gpu_device, m_settings_window);
+        SDL_DestroyWindow(m_settings_window);
+        m_settings_window = nullptr;
         return false;
     }
 
     ImGui::SetCurrentContext(m_main_context);
-    ImGuiContext* settings_context = ImGui::CreateContext(ImGui::GetIO().Fonts);
-    ImGui::SetCurrentContext(settings_context);
-    ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
-    ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts.empty()
-        ? nullptr : ImGui::GetIO().Fonts->Fonts[0];
+    m_settings_context = ImGui::CreateContext();
+    ImGui::SetCurrentContext(m_settings_context);
+    ImFontConfig font_config;
+    font_config.SizePixels = static_cast<float>(m_state.base_font_size);
+    ImGui::GetIO().FontDefault = load_bundled_font(
+        "IBM-Plex-Sans", "IBMPlexSans-Regular.ttf", false, font_config.SizePixels);
+    if (ImGui::GetIO().FontDefault == nullptr)
+        ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->AddFontDefault(&font_config);
     ImGui::GetIO().IniFilename = nullptr;
     ApplicationState appearance_state = m_state;
-    appearance_state.ui_scale *= m_dpi_scale;
+    m_settings_dpi_scale = window_content_scale(m_settings_window);
+    appearance_state.ui_scale *= m_settings_dpi_scale;
     set_premiere_theme(appearance_state);
 
-    m_settings_window = settings_window;
-    m_settings_context = settings_context;
-    glfwSetWindowUserPointer(m_settings_window, m_settings_context);
-    glfwSetCursorPosCallback(m_settings_window, settings_cursor_position_callback);
-    glfwSetCursorEnterCallback(m_settings_window, settings_cursor_enter_callback);
-    glfwSetMouseButtonCallback(m_settings_window, settings_mouse_button_callback);
-    glfwSetScrollCallback(m_settings_window, settings_scroll_callback);
-    glfwSetWindowFocusCallback(m_settings_window, settings_focus_callback);
-    glfwMakeContextCurrent(m_window);
+    if (!ImGui_ImplSDL3_InitForSDLGPU(m_settings_window)) {
+        ImGui::DestroyContext(m_settings_context);
+        m_settings_context = nullptr;
+        SDL_ReleaseWindowFromGPUDevice(m_gpu_device, m_settings_window);
+        SDL_DestroyWindow(m_settings_window);
+        m_settings_window = nullptr;
+        ImGui::SetCurrentContext(m_main_context);
+        return false;
+    }
+    ImGui_ImplSDLGPU3_InitInfo init_info{};
+    init_info.Device = m_gpu_device;
+    init_info.ColorTargetFormat = SDL_GetGPUSwapchainTextureFormat(m_gpu_device,
+                                                                  m_settings_window);
+    init_info.MSAASamples = SDL_GPU_SAMPLECOUNT_1;
+    init_info.SwapchainComposition = SDL_GPU_SWAPCHAINCOMPOSITION_SDR;
+    init_info.PresentMode = SDL_GPU_PRESENTMODE_VSYNC;
+    if (!ImGui_ImplSDLGPU3_Init(&init_info)) {
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext(m_settings_context);
+        m_settings_context = nullptr;
+        SDL_ReleaseWindowFromGPUDevice(m_gpu_device, m_settings_window);
+        SDL_DestroyWindow(m_settings_window);
+        m_settings_window = nullptr;
+        ImGui::SetCurrentContext(m_main_context);
+        return false;
+    }
+    m_close_settings_requested = false;
+    SDL_ShowWindow(m_settings_window);
+    SDL_RaiseWindow(m_settings_window);
     ImGui::SetCurrentContext(m_main_context);
-    glfwShowWindow(m_settings_window);
-    glfwFocusWindow(m_settings_window);
     return true;
 }
 
@@ -825,59 +861,68 @@ void UISystem::close_settings_window() {
         return;
 
     ImGui::SetCurrentContext(m_settings_context);
+    ImGui_ImplSDLGPU3_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext(m_settings_context);
-    glfwDestroyWindow(m_settings_window);
+    SDL_ReleaseWindowFromGPUDevice(m_gpu_device, m_settings_window);
+    SDL_DestroyWindow(m_settings_window);
     m_settings_window = nullptr;
     m_settings_context = nullptr;
-    m_settings_last_frame_time = 0.0;
     m_appearance_edit_active = false;
-    glfwMakeContextCurrent(m_window);
+    m_close_settings_requested = false;
     ImGui::SetCurrentContext(m_main_context);
 }
 
 void UISystem::render_settings_window() {
     if (m_settings_window == nullptr)
         return;
-    if (glfwWindowShouldClose(m_settings_window)) {
+    if (m_close_settings_requested) {
         close_settings_window();
         return;
     }
 
-    glfwMakeContextCurrent(m_settings_window);
+    const float settings_dpi_scale = window_content_scale(m_settings_window);
+    if (settings_dpi_scale != m_settings_dpi_scale) {
+        m_settings_dpi_scale = settings_dpi_scale;
+        ApplicationState appearance_state = m_state;
+        appearance_state.ui_scale *= m_settings_dpi_scale;
+        ImGui::SetCurrentContext(m_settings_context);
+        set_premiere_theme(appearance_state);
+    }
     ImGui::SetCurrentContext(m_settings_context);
-    ImGuiIO& io = ImGui::GetIO();
-    int window_width;
-    int window_height;
-    int framebuffer_width;
-    int framebuffer_height;
-    glfwGetWindowSize(m_settings_window, &window_width, &window_height);
-    glfwGetFramebufferSize(m_settings_window, &framebuffer_width, &framebuffer_height);
-    io.DisplaySize = ImVec2(static_cast<float>(window_width), static_cast<float>(window_height));
-    io.DisplayFramebufferScale = ImVec2(
-        window_width > 0 ? static_cast<float>(framebuffer_width) / window_width : 1.0f,
-        window_height > 0 ? static_cast<float>(framebuffer_height) / window_height : 1.0f);
-    const double current_time = glfwGetTime();
-    io.DeltaTime = m_settings_last_frame_time > 0.0
-                       ? std::max(0.001f, static_cast<float>(current_time - m_settings_last_frame_time))
-                       : 1.0f / 60.0f;
-    m_settings_last_frame_time = current_time;
+    ImGui_ImplSDLGPU3_NewFrame();
+    ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
     render_settings_contents();
     ImGui::Render();
-    ImDrawData* settings_draw_data = ImGui::GetDrawData();
+    ImDrawData* draw_data = ImGui::GetDrawData();
 
-    int width;
-    int height;
-    glfwGetFramebufferSize(m_settings_window, &width, &height);
-    ImGui::SetCurrentContext(m_main_context);
-    glfwMakeContextCurrent(m_settings_window);
-    glViewport(0, 0, width, height);
-    glClearColor(0.075f, 0.075f, 0.075f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT);
-    ImGui_ImplOpenGL3_RenderDrawData(settings_draw_data);
-    glfwSwapBuffers(m_settings_window);
-
-    glfwMakeContextCurrent(m_window);
+    SDL_GPUCommandBuffer* command_buffer = SDL_AcquireGPUCommandBuffer(m_gpu_device);
+    if (command_buffer == nullptr) {
+        ImGui::SetCurrentContext(m_main_context);
+        return;
+    }
+    SDL_GPUTexture* swapchain_texture = nullptr;
+    if (!SDL_WaitAndAcquireGPUSwapchainTexture(command_buffer, m_settings_window,
+                                               &swapchain_texture, nullptr, nullptr)) {
+        SDL_CancelGPUCommandBuffer(command_buffer);
+        ImGui::SetCurrentContext(m_main_context);
+        return;
+    }
+    if (swapchain_texture != nullptr && draw_data->DisplaySize.x > 0.0f &&
+        draw_data->DisplaySize.y > 0.0f) {
+        ImGui_ImplSDLGPU3_PrepareDrawData(draw_data, command_buffer);
+        SDL_GPUColorTargetInfo target_info{};
+        target_info.texture = swapchain_texture;
+        target_info.clear_color = SDL_FColor{0.075f, 0.075f, 0.075f, 1.0f};
+        target_info.load_op = SDL_GPU_LOADOP_CLEAR;
+        target_info.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_GPURenderPass* render_pass = SDL_BeginGPURenderPass(command_buffer,
+                                                                &target_info, 1, nullptr);
+        ImGui_ImplSDLGPU3_RenderDrawData(draw_data, command_buffer, render_pass);
+        SDL_EndGPURenderPass(render_pass);
+    }
+    SDL_SubmitGPUCommandBuffer(command_buffer);
     ImGui::SetCurrentContext(m_main_context);
 }
 

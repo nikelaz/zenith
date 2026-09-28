@@ -5,7 +5,8 @@
 #include "../providers/provider.h"
 #include "../state/application-state.h"
 #include "chat-panel.h"
-#include <GLFW/glfw3.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_gpu.h>
 #include <optional>
 #include <string>
 #include <vector>
@@ -20,16 +21,18 @@ private:
     bool m_threads_panel_open = true;
     bool m_chat_panel_open = true;
     bool m_usage_panel_open = true;
-    bool m_dragging_title_bar = false;
-    GLFWwindow* m_window = nullptr;
-    GLFWwindow* m_settings_window = nullptr;
+    bool m_close_settings_requested = false;
+    SDL_Window* m_window = nullptr;
+    SDL_Window* m_settings_window = nullptr;
+    SDL_GPUDevice* m_gpu_device = nullptr;
     ImGuiContext* m_main_context = nullptr;
     ImGuiContext* m_settings_context = nullptr;
-    double m_settings_last_frame_time = 0.0;
     int m_applied_base_font_size = 0;
     float m_applied_ui_scale = 0.0f;
     float m_dpi_scale = 1.0f;
     float m_applied_dpi_scale = 0.0f;
+    float m_settings_dpi_scale = 0.0f;
+    int m_title_bar_height = 0;
     bool m_appearance_edit_active = false;
     bool m_settings_show_appearance = true;
     ApplicationState& m_state;
@@ -37,26 +40,27 @@ private:
     ChatPanelState m_chat_panel_state;
     std::vector<std::optional<UsageSnapshot>> m_usage_snapshots;
     std::vector<bool> m_usage_loading;
-    unsigned int m_menu_icon_texture = 0;
-    int m_title_bar_drag_window_x = 0;
-    int m_title_bar_drag_window_y = 0;
-    double m_title_bar_drag_cursor_x = 0.0;
-    double m_title_bar_drag_cursor_y = 0.0;
+    SDL_GPUTexture* m_menu_icon_texture = nullptr;
+    SDL_Rect m_title_bar_interactive_bounds[3] = {};
 
     void new_frame();
     void prepare_backbuffer();
-    void prepare_viewport();
     bool open_settings_window();
     void close_settings_window();
     void render_settings_window();
     void render_settings_contents();
     void apply_appearance_settings();
+    static SDL_HitTestResult SDLCALL title_bar_hit_test(SDL_Window* window,
+                                                       const SDL_Point* point,
+                                                       void* user_data);
 
 public:
-    UISystem(GLFWwindow* window, ApplicationState& state, std::vector<ProviderPtr>& providers);
+    UISystem(SDL_Window* window, SDL_GPUDevice* gpu_device, ApplicationState& state,
+             std::vector<ProviderPtr>& providers);
     Result init();
     void deinit();
     void render_frame_to_backbuffer();
+    void process_event(const SDL_Event& event);
 };
 
 #endif

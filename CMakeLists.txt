@@ -15,25 +15,22 @@ function(set_project_warnings target)
     endif()
 endfunction()
 
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/glfw/CMakeLists.txt")
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/SDL/CMakeLists.txt")
     message(FATAL_ERROR "Dependencies are missing. Run: git submodule update --init --recursive")
 endif()
 
-set(GLFW_BUILD_DOCS OFF CACHE BOOL "Build GLFW documentation" FORCE)
-set(GLFW_BUILD_TESTS OFF CACHE BOOL "Build GLFW tests" FORCE)
-set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "Build GLFW examples" FORCE)
-set(GLFW_INSTALL OFF CACHE BOOL "Install GLFW" FORCE)
-
-add_subdirectory(third_party/glfw EXCLUDE_FROM_ALL)
-if(GLFW_BUILD_WAYLAND)
-    target_sources(glfw PRIVATE src/platform/glfw-wayland-window-drag.c)
-endif()
-if(GLFW_BUILD_WIN32)
-    target_sources(glfw PRIVATE src/platform/glfw-win32-window-drag.c)
-    target_link_libraries(glfw PRIVATE comctl32 dwmapi)
-endif()
-
-find_package(OpenGL REQUIRED)
+set(SDL_SHARED OFF CACHE BOOL "Build SDL shared library" FORCE)
+set(SDL_STATIC ON CACHE BOOL "Build SDL static library" FORCE)
+set(SDL_TEST OFF CACHE BOOL "Build SDL tests" FORCE)
+set(SDL_EXAMPLES OFF CACHE BOOL "Build SDL examples" FORCE)
+set(SDL_INSTALL OFF CACHE BOOL "Install SDL" FORCE)
+set(SDL_OPENGL OFF CACHE BOOL "Build SDL OpenGL support" FORCE)
+set(SDL_OPENGLES OFF CACHE BOOL "Build SDL OpenGL ES support" FORCE)
+set(SDL_RENDER OFF CACHE BOOL "Build SDL 2D renderer" FORCE)
+set(SDL_RENDER_GPU OFF CACHE BOOL "Build SDL GPU 2D renderer" FORCE)
+set(SDL_X11_XSCRNSAVER OFF CACHE BOOL "Build SDL X11 screensaver support" FORCE)
+set(SDL_X11_XTEST OFF CACHE BOOL "Build SDL X11 test support" FORCE)
+add_subdirectory(third_party/SDL EXCLUDE_FROM_ALL)
 
 set_source_files_properties(third_party/tinyfiledialogs/tinyfiledialogs.c PROPERTIES LANGUAGE CXX)
 add_subdirectory(third_party/sqlite3 EXCLUDE_FROM_ALL)
@@ -63,14 +60,14 @@ add_library(imgui STATIC
     third_party/imgui/imgui_tables.cpp
     third_party/imgui/imgui_widgets.cpp
     third_party/imgui/misc/cpp/imgui_stdlib.cpp
-    third_party/imgui/backends/imgui_impl_glfw.cpp
-    third_party/imgui/backends/imgui_impl_opengl3.cpp
+    third_party/imgui/backends/imgui_impl_sdl3.cpp
+    third_party/imgui/backends/imgui_impl_sdlgpu3.cpp
 )
 target_include_directories(imgui PUBLIC
     third_party/imgui
     third_party/imgui/backends
 )
-target_link_libraries(imgui PUBLIC glfw OpenGL::GL)
+target_link_libraries(imgui PUBLIC SDL3::SDL3-static)
 
 add_library(md4c STATIC third_party/md4c/src/md4c.c)
 target_include_directories(md4c PUBLIC third_party/md4c/src)
@@ -136,17 +133,6 @@ if(WIN32)
 elseif(APPLE)
     target_link_libraries(Zenith PRIVATE "-framework AppKit")
 endif()
-if(GLFW_BUILD_WAYLAND)
-    target_compile_definitions(Zenith PRIVATE ZENITH_HAS_WAYLAND_WINDOW_DRAG)
-endif()
-if(GLFW_BUILD_WIN32)
-    target_compile_definitions(Zenith PRIVATE ZENITH_HAS_WIN32_WINDOW_DRAG)
-endif()
-
-if(APPLE)
-    target_compile_definitions(Zenith PRIVATE GL_SILENCE_DEPRECATION)
-endif()
-
 set_project_warnings(Zenith)
 
 include(CTest)

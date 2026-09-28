@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 struct ImFont;
+struct SDL_GPUTexture;
 
 struct ChatPanelState {
     std::string message_input;
@@ -17,8 +18,8 @@ struct ChatPanelState {
     TurnId active_turn_id = 0;
     TurnId next_turn_id = 1;
     ImFont* monospace_font = nullptr;
-    unsigned int attachment_icon_texture = 0;
-    unsigned int paperclip_icon_texture = 0;
+    SDL_GPUTexture* attachment_icon_texture = nullptr;
+    SDL_GPUTexture* paperclip_icon_texture = nullptr;
     std::vector<FileReference> file_references;
     std::vector<FileAttachment> attachments;
     std::string attachment_error;

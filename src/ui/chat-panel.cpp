@@ -5,7 +5,6 @@
 #include "imgui_internal.h"
 #include "imgui_md.h"
 #include "misc/cpp/imgui_stdlib.h"
-#include <GLFW/glfw3.h>
 #include <tinyfiledialogs.h>
 #include <algorithm>
 #include <cfloat>
@@ -141,15 +140,8 @@ const char* read_composer_clipboard(ImGuiContext* context) {
         return "";
     }
     platform.Platform_ClipboardUserData = clipboard->user_data;
-    glfwGetError(nullptr);
-    const GLFWerrorfun error_callback = glfwSetErrorCallback(nullptr);
     const char* text = clipboard->get_text == nullptr ? nullptr : clipboard->get_text(context);
-    const char* description = nullptr;
-    const int error = glfwGetError(&description);
-    glfwSetErrorCallback(error_callback);
     platform.Platform_ClipboardUserData = clipboard;
-    if (error != GLFW_NO_ERROR && error != GLFW_FORMAT_UNAVAILABLE && error_callback != nullptr)
-        error_callback(error, description);
     if ((text == nullptr || text[0] == '\0') && result.status == ResultStatus::Error)
         clipboard->panel->attachment_error = result.error;
     return text;
@@ -967,7 +959,7 @@ std::string attachment_tag_label(const std::string& filename, float max_width,
 
 bool render_attachment_tag(const char* id, ImVec2 position, float width,
                            const std::string& label, bool removable, bool bordered,
-                           bool selectable_text, unsigned int icon_texture) {
+                           bool selectable_text, SDL_GPUTexture* icon_texture) {
     ImGui::SetCursorScreenPos(position);
     ImGui::InvisibleButton(id, ImVec2(width, attachment_tag_height()));
     const bool hovered = ImGui::IsItemHovered();
@@ -981,11 +973,11 @@ bool render_attachment_tag(const char* id, ImVec2 position, float width,
         draw_list->AddRect(position, tag_max,
             ImGui::GetColorU32(ImVec4(0.34f, 0.34f, 0.34f, 1.0f)), ui_size(5.0f));
 
-    if (icon_texture != 0) {
+    if (icon_texture != nullptr) {
         const ImVec2 icon_min(position.x + ui_size(11.0f),
                                position.y + (attachment_tag_height() - ui_size(12.8f)) * 0.5f);
         const ImVec2 icon_max(icon_min.x + ui_size(8.8f), icon_min.y + ui_size(12.8f));
-        draw_list->AddImage(ImTextureRef(static_cast<ImTextureID>(icon_texture)),
+        draw_list->AddImage(ImTextureRef(static_cast<ImTextureID>(reinterpret_cast<intptr_t>(icon_texture))),
             icon_min, icon_max, ImVec2(0, 0), ImVec2(1, 1),
             ImGui::GetColorU32(ImVec4(0.80f, 0.80f, 0.80f, 1.0f)));
     }
@@ -1016,7 +1008,7 @@ bool render_attachment_tag(const char* id, ImVec2 position, float width,
     return close_hovered && ImGui::IsItemClicked();
 }
 
-void render_user_message(const ChatMessage& message, unsigned int icon_texture) {
+void render_user_message(const ChatMessage& message, SDL_GPUTexture* icon_texture) {
     begin_chat_component();
     const float horizontal_padding = ui_size(12.0f);
     const float vertical_padding = ui_size(8.0f);
@@ -1772,11 +1764,11 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         const ImVec2 attach_max = ImGui::GetItemRectMax();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Attach files");
-        if (panel_state.paperclip_icon_texture != 0) {
+        if (panel_state.paperclip_icon_texture != nullptr) {
             const ImVec2 icon_min((attach_min.x + attach_max.x - ui_size(14.0f)) * 0.5f,
                                   (attach_min.y + attach_max.y - ui_size(16.0f)) * 0.5f);
             draw_list->AddImage(
-                ImTextureRef(static_cast<ImTextureID>(panel_state.paperclip_icon_texture)),
+                ImTextureRef(static_cast<ImTextureID>(reinterpret_cast<intptr_t>(panel_state.paperclip_icon_texture))),
                 icon_min, ImVec2(icon_min.x + ui_size(14.0f), icon_min.y + ui_size(16.0f)),
                 ImVec2(0, 0), ImVec2(1, 1), ImGui::GetColorU32(ImGuiCol_Text));
         }

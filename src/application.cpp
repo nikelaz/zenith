@@ -7,15 +7,10 @@
 #endif
 #include "application.h"
 #include "base/result.h"
-#include <GLFW/glfw3.h>
 #include <filesystem>
 #include <string>
 #include <system_error>
 #include <tinyfiledialogs.h>
-
-#ifdef _WIN32
-extern "C" void zenith_enable_win32_window_management(GLFWwindow* window);
-#endif
 
 constexpr int kWindowWidth = 1440;
 constexpr int kWindowHeight = 900;
@@ -43,20 +38,14 @@ Result application_database_path(std::filesystem::path* path) {
 }
 }
 
-static void glfw_error_callback(int code, const char* description) {
-    const std::string message = "GLFW error " + std::to_string(code) + ": " +
-                                (description != nullptr ? description : "Unknown error");
-    tinyfd_messageBox("Zenith - GLFW error", message.c_str(), "ok", "error", 1);
-}
-
 Application::~Application() {
     deinit();
 }
 
 Result Application::init() {
-    Result glfw_init_result = window_init();
-    if (glfw_init_result.status == ResultStatus::Error) {
-        return glfw_init_result;
+    Result window_result = window_init();
+    if (window_result.status == ResultStatus::Error) {
+        return window_result;
     }
 
     if (!m_state.projects.empty() && m_state.projects.front().directory.empty()) {
@@ -98,7 +87,7 @@ Result Application::init() {
             return provider_result;
         }
     }
-    m_ui.emplace(m_window, m_state, m_providers);
+    m_ui.emplace(m_window, m_gpu_device, m_state, m_providers);
 
     Result ui_init_result = m_ui->init();
     if (ui_init_result.status == ResultStatus::Error) {
@@ -133,47 +122,56 @@ void Application::deinit() {
 }
 
 Result Application::window_init() {
-    glfwSetErrorCallback(glfw_error_callback);
+    if (!SDL_Init(SDL_INIT_VIDEO))
+        return result_error(std::string("Failed to initialize SDL: ") + SDL_GetError());
 
-    if (glfwInit() != GLFW_TRUE) {
-        return result_error("Failed to initialize GLFW");
-    }
-
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
-#ifdef _WIN32
-    glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
-#endif
-
-#ifdef __APPLE__
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-#endif
-
-    m_window = glfwCreateWindow(kWindowWidth, kWindowHeight, "Zenith", nullptr, nullptr);
-
+    m_window = SDL_CreateWindow("Zenith", kWindowWidth, kWindowHeight,
+                                SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS |
+                                    SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (m_window == nullptr) {
-        glfwTerminate();
-        return result_error("Failed to create application window");
+        SDL_Quit();
+        return result_error(std::string("Failed to create application window: ") + SDL_GetError());
     }
+    SDL_SetWindowPosition(m_window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
 
-#ifdef _WIN32
-    zenith_enable_win32_window_management(m_window);
-#endif
-
-    glfwMakeContextCurrent(m_window);
-    glfwSwapInterval(1);
+    m_gpu_device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV |
+                                           SDL_GPU_SHADERFORMAT_DXIL |
+                                           SDL_GPU_SHADERFORMAT_DXBC |
+                                           SDL_GPU_SHADERFORMAT_MSL |
+                                           SDL_GPU_SHADERFORMAT_METALLIB,
+                                       false, nullptr);
+    if (m_gpu_device == nullptr) {
+        window_deinit();
+        return result_error(std::string("Failed to create SDL GPU device: ") + SDL_GetError());
+    }
+    if (!SDL_ClaimWindowForGPUDevice(m_gpu_device, m_window)) {
+        const std::string error = SDL_GetError();
+        window_deinit();
+        return result_error("Failed to claim the application window for SDL GPU: " + error);
+    }
+    if (!SDL_SetGPUSwapchainParameters(m_gpu_device, m_window,
+                                      SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+                                      SDL_GPU_PRESENTMODE_VSYNC)) {
+        const std::string error = SDL_GetError();
+        window_deinit();
+        return result_error("Failed to configure the application swapchain: " + error);
+    }
 
     return result_ok();
 };
 
 void Application::window_deinit() {
-    if (m_window != nullptr) {
-        glfwDestroyWindow(m_window);
-        m_window = nullptr;
-        glfwTerminate();
+    if (m_gpu_device != nullptr && m_window != nullptr)
+        SDL_ReleaseWindowFromGPUDevice(m_gpu_device, m_window);
+    if (m_gpu_device != nullptr) {
+        SDL_DestroyGPUDevice(m_gpu_device);
+        m_gpu_device = nullptr;
     }
+    if (m_window != nullptr) {
+        SDL_DestroyWindow(m_window);
+        m_window = nullptr;
+    }
+    SDL_Quit();
 }
 
 void Application::run() {
@@ -188,11 +186,19 @@ void Application::run() {
         return;
     }
 
-    while (!glfwWindowShouldClose(m_window)) {
-        glfwPollEvents();
-
+    m_quit_requested = false;
+    while (!m_quit_requested) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT ||
+                (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
+                 event.window.windowID == SDL_GetWindowID(m_window))) {
+                m_quit_requested = true;
+            }
+            m_ui->process_event(event);
+        }
+        if (m_quit_requested)
+            break;
         m_ui->render_frame_to_backbuffer();
-
-        glfwSwapBuffers(m_window);
     }
 }
