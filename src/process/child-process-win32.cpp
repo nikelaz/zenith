@@ -234,7 +234,9 @@ Result child_process_start(
         child_process_stop(process);
         return result_error(failure_message("connect", process_name));
     }
-    setvbuf(process->input, nullptr, _IOLBF, 0);
+    // MSVC requires a nonzero size for line-buffered streams. This pipe carries
+    // newline-delimited protocol messages, so leave it unbuffered instead.
+    setvbuf(process->input, nullptr, _IONBF, 0);
     return result_ok();
 }
 

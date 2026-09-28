@@ -1,3 +1,10 @@
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shlobj.h>
+#endif
 #include "application.h"
 #include "base/result.h"
 #include <GLFW/glfw3.h>
@@ -8,6 +15,29 @@
 
 constexpr int kWindowWidth = 1440;
 constexpr int kWindowHeight = 900;
+
+namespace {
+Result application_database_path(std::filesystem::path* path) {
+#ifdef _WIN32
+    PWSTR local_app_data = nullptr;
+    const HRESULT result = SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE,
+                                                nullptr, &local_app_data);
+    if (FAILED(result) || local_app_data == nullptr)
+        return result_error("Failed to locate the local application data folder");
+    const std::filesystem::path directory =
+        std::filesystem::path(local_app_data) / L"Zenith";
+    CoTaskMemFree(local_app_data);
+    std::error_code error;
+    std::filesystem::create_directories(directory, error);
+    if (error)
+        return result_error("Failed to create the Zenith data folder: " + error.message());
+    *path = directory / L"Zenith.sqlite3";
+#else
+    *path = "Zenith.sqlite3";
+#endif
+    return result_ok();
+}
+}
 
 static void glfw_error_callback(int code, const char* description) {
     const std::string message = "GLFW error " + std::to_string(code) + ": " +
@@ -35,7 +65,13 @@ Result Application::init() {
         }
     }
 
-    Result state_result = m_state_store.open("Zenith.sqlite3");
+    std::filesystem::path database_path;
+    Result state_result = application_database_path(&database_path);
+    if (state_result.status == ResultStatus::Error) {
+        deinit();
+        return state_result;
+    }
+    state_result = m_state_store.open(database_path.string());
     if (state_result.status == ResultStatus::Error) {
         deinit();
         return state_result;
@@ -101,6 +137,9 @@ Result Application::window_init() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+#ifdef _WIN32
+    glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
+#endif
 
 #ifdef __APPLE__
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);

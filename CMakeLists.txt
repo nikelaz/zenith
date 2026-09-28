@@ -96,6 +96,9 @@ add_executable(Zenith
     src/ui/ui-system.cpp
     third_party/tinyfiledialogs/tinyfiledialogs.c
 )
+if(WIN32)
+    set_target_properties(Zenith PROPERTIES WIN32_EXECUTABLE TRUE)
+endif()
 if(APPLE)
     set_target_properties(Zenith PROPERTIES MACOSX_BUNDLE TRUE)
     add_custom_command(TARGET Zenith POST_BUILD
@@ -125,7 +128,7 @@ endif()
 target_include_directories(Zenith PRIVATE third_party/tinyfiledialogs third_party/sqlite3 third_party/json/include)
 target_link_libraries(Zenith PRIVATE imgui_md SQLite3)
 if(WIN32)
-    target_link_libraries(Zenith PRIVATE gdiplus ole32)
+    target_link_libraries(Zenith PRIVATE gdiplus ole32 shell32)
 elseif(APPLE)
     target_link_libraries(Zenith PRIVATE "-framework AppKit")
 endif()

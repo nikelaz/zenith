@@ -326,6 +326,11 @@ UISystem::UISystem(GLFWwindow* window, ApplicationState& state,
 }
 
 Result UISystem::init() {
+    float content_scale_x = 1.0f;
+    float content_scale_y = 1.0f;
+    glfwGetWindowContentScale(m_window, &content_scale_x, &content_scale_y);
+    m_dpi_scale = std::max(content_scale_x, content_scale_y);
+
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     m_main_context = ImGui::GetCurrentContext();
@@ -368,14 +373,17 @@ Result UISystem::init() {
 void UISystem::apply_appearance_settings() {
     m_state.base_font_size = std::clamp(m_state.base_font_size, 12, 24);
     m_state.ui_scale = std::clamp(m_state.ui_scale, 0.75f, 2.0f);
-    set_premiere_theme(m_state);
+    ApplicationState appearance_state = m_state;
+    appearance_state.ui_scale *= m_dpi_scale;
+    set_premiere_theme(appearance_state);
     if (m_settings_context != nullptr) {
         ImGui::SetCurrentContext(m_settings_context);
-        set_premiere_theme(m_state);
+        set_premiere_theme(appearance_state);
         ImGui::SetCurrentContext(m_main_context);
     }
     m_applied_base_font_size = m_state.base_font_size;
     m_applied_ui_scale = m_state.ui_scale;
+    m_applied_dpi_scale = m_dpi_scale;
 }
 
 void UISystem::deinit() {
@@ -431,9 +439,14 @@ void UISystem::render_frame_to_backbuffer() {
         open_settings_window();
     }
 
+    float content_scale_x = 1.0f;
+    float content_scale_y = 1.0f;
+    glfwGetWindowContentScale(m_window, &content_scale_x, &content_scale_y);
+    m_dpi_scale = std::max(content_scale_x, content_scale_y);
     if (!m_appearance_edit_active &&
         (m_applied_base_font_size != m_state.base_font_size ||
-         m_applied_ui_scale != m_state.ui_scale)) {
+         m_applied_ui_scale != m_state.ui_scale ||
+         m_applied_dpi_scale != m_dpi_scale)) {
         glfwMakeContextCurrent(m_window);
         ImGui::SetCurrentContext(m_main_context);
         apply_appearance_settings();
@@ -767,6 +780,9 @@ bool UISystem::open_settings_window() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 2);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+#ifdef _WIN32
+    glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
+#endif
 #ifdef __APPLE__
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
 #endif
@@ -785,7 +801,9 @@ bool UISystem::open_settings_window() {
     ImGui::GetIO().FontDefault = ImGui::GetIO().Fonts->Fonts.empty()
         ? nullptr : ImGui::GetIO().Fonts->Fonts[0];
     ImGui::GetIO().IniFilename = nullptr;
-    set_premiere_theme(m_state);
+    ApplicationState appearance_state = m_state;
+    appearance_state.ui_scale *= m_dpi_scale;
+    set_premiere_theme(appearance_state);
 
     m_settings_window = settings_window;
     m_settings_context = settings_context;

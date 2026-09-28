@@ -28,6 +28,8 @@ private:
     double m_settings_last_frame_time = 0.0;
     int m_applied_base_font_size = 0;
     float m_applied_ui_scale = 0.0f;
+    float m_dpi_scale = 1.0f;
+    float m_applied_dpi_scale = 0.0f;
     bool m_appearance_edit_active = false;
     bool m_settings_show_appearance = true;
     ApplicationState& m_state;
