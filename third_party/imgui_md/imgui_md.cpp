@@ -401,7 +401,16 @@ void imgui_md::render_text(const char* str, const char* str_end)
 	while (!m_is_image && str < str_end) {
 
 		const char* te = str_end;
-		const float width = ImGui::GetContentRegionAvail().x;
+		float width = ImGui::GetContentRegionAvail().x;
+		const char* word_end = str;
+		while (word_end < str_end && *word_end != ' ' && *word_end != '\n' && *word_end != '\t')
+			++word_end;
+		const float word_width = ImGui::CalcTextSize(str, word_end).x;
+		const float line_width = ImGui::GetWindowContentRegionMax().x - ImGui::GetWindowContentRegionMin().x;
+		if (word_width > width && word_width <= line_width && width < line_width) {
+			ImGui::NewLine();
+			width = ImGui::GetContentRegionAvail().x;
+		}
 		te = ImGui::GetFont()->CalcWordWrapPositionA(scale, str, str_end, width);
 		if (te == str)
 			++te;
