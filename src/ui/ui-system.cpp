@@ -510,7 +510,12 @@ void UISystem::render_frame_to_backbuffer() {
         if (result.purpose == FileDialogPurpose::OpenProject) {
             apply_open_project_result(m_state, result, m_window);
         } else {
-            apply_attachment_result(m_chat_panel_state, result);
+            if (m_state.selected_project < m_state.projects.size() &&
+                m_state.selected_thread < m_state.projects[m_state.selected_project].threads.size()) {
+                const std::string& id =
+                    m_state.projects[m_state.selected_project].threads[m_state.selected_thread].id;
+                apply_attachment_result(m_thread_panels[id], result);
+            }
         }
     }
 
@@ -608,15 +613,19 @@ void UISystem::render_frame_to_backbuffer() {
                     message.segments.push_back({ChatSegment::Kind::Text, {}, {}});
                 message.segments.back().text += event.text;
             } else if (event.kind == EventKind::TurnFailed) {
-                if (event.turn_id == m_chat_panel_state.active_turn_id) {
-                    m_chat_panel_state.is_generating = false;
-                    m_chat_panel_state.active_turn_id = 0;
+                auto panel = m_thread_panels.find(event.conversation_id);
+                if (panel != m_thread_panels.end() &&
+                    event.turn_id == panel->second.active_turn_id) {
+                    panel->second.is_generating = false;
+                    panel->second.active_turn_id = 0;
                 }
                 messages.push_back({ChatMessageRole::Assistant, event.text, {}, {}, {}, {}});
             } else if (event.kind == EventKind::TurnCompleted) {
-                if (event.turn_id == m_chat_panel_state.active_turn_id) {
-                    m_chat_panel_state.is_generating = false;
-                    m_chat_panel_state.active_turn_id = 0;
+                auto panel = m_thread_panels.find(event.conversation_id);
+                if (panel != m_thread_panels.end() &&
+                    event.turn_id == panel->second.active_turn_id) {
+                    panel->second.is_generating = false;
+                    panel->second.active_turn_id = 0;
                 }
             }
         } catch (...) {
@@ -729,9 +738,52 @@ void UISystem::render_frame_to_backbuffer() {
     render_dock_area();
     if (m_threads_panel_open)
         render_threads_panel(m_state, m_file_dialog_queue, m_window);
-    if (m_chat_panel_open)
-        render_chat_panel(m_state, m_providers, m_chat_panel_state,
-                          m_file_dialog_queue, m_window);
+    if (m_chat_panel_open) {
+        if (m_state.selected_project < m_state.projects.size() &&
+            m_state.selected_thread < m_state.projects[m_state.selected_project].threads.size()) {
+            ChatThread& thread =
+                m_state.projects[m_state.selected_project].threads[m_state.selected_thread];
+            ChatPanelState& panel = m_thread_panels.try_emplace(thread.id).first->second;
+            if (!panel.initialized) {
+                panel.initialized = true;
+                panel.selected_provider = m_chat_panel_state.selected_provider;
+                panel.selected_model = m_chat_panel_state.selected_model;
+                if (!thread.provider.empty()) {
+                    for (std::size_t index = 0; index < m_providers.size(); ++index) {
+                        if (m_providers[index]->name == thread.provider) {
+                            panel.selected_provider = index;
+                            panel.selected_model = thread.model;
+                            break;
+                        }
+                    }
+                }
+                panel.selected_reasoning_effort = thread.reasoning_effort;
+                panel.selected_permission_mode = thread.permission_mode;
+            }
+            panel.monospace_font = m_chat_panel_state.monospace_font;
+            panel.attachment_icon_texture = m_chat_panel_state.attachment_icon_texture;
+            panel.paperclip_icon_texture = m_chat_panel_state.paperclip_icon_texture;
+            const std::string id = thread.id;
+            render_chat_panel(m_state, m_providers, panel, m_next_turn_id,
+                              m_file_dialog_queue, m_window);
+            if (panel.selected_provider < m_providers.size()) {
+                for (ChatProject& project : m_state.projects) {
+                    auto found = std::find_if(project.threads.begin(), project.threads.end(),
+                        [&id](const ChatThread& value) { return value.id == id; });
+                    if (found != project.threads.end()) {
+                        found->provider = m_providers[panel.selected_provider]->name;
+                        found->model = panel.selected_model;
+                        found->reasoning_effort = panel.selected_reasoning_effort;
+                        found->permission_mode = panel.selected_permission_mode;
+                        break;
+                    }
+                }
+            }
+        } else {
+            render_chat_panel(m_state, m_providers, m_chat_panel_state, m_next_turn_id,
+                              m_file_dialog_queue, m_window);
+        }
+    }
 
     for (std::size_t index = 0; index < m_providers.size(); ++index) {
         Provider* provider = m_providers[index].get();

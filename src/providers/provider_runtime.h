@@ -21,6 +21,7 @@ struct ProviderRuntime {
     bool stopping;
     TurnId next_turn_id;
     std::thread worker;
+    std::vector<std::thread> turn_workers;
     std::mutex event_mutex;
     std::vector<Event> events;
 };
@@ -30,6 +31,7 @@ void provider_runtime_init(ProviderRuntime* runtime, ProviderProcessFn process,
 void provider_runtime_set_initialize(ProviderRuntime* runtime, ProviderInitializeFn initialize);
 Result provider_runtime_start(ProviderRuntime* runtime);
 Result provider_runtime_submit(ProviderRuntime* runtime, TurnRequest request);
+bool provider_runtime_cancel_queued(ProviderRuntime* runtime, TurnId turn_id);
 std::vector<Event> provider_runtime_poll_events(ProviderRuntime* runtime);
 void provider_runtime_emit(ProviderRuntime* runtime, const Event* event);
 void provider_runtime_shutdown(ProviderRuntime* runtime);

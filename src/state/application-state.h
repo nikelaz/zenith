@@ -52,6 +52,10 @@ struct ChatThread {
     std::string description;
     std::string id;
     std::vector<ChatMessage> messages;
+    std::string provider;
+    std::string model;
+    std::string reasoning_effort;
+    std::string permission_mode;
 };
 
 struct ChatProject {

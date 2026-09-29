@@ -18,7 +18,10 @@ void run_provider(ProviderRuntime* runtime) {
             runtime->requests.pop();
         }
 
-        runtime->process(runtime->process_context, &request, runtime);
+        runtime->turn_workers.emplace_back(
+            [runtime, request = std::move(request)] {
+                runtime->process(runtime->process_context, &request, runtime);
+            });
     }
 }
 
@@ -56,8 +59,28 @@ Result provider_runtime_submit(ProviderRuntime* runtime, TurnRequest request) {
             request.turn_id = runtime->next_turn_id++;
         runtime->requests.push(std::move(request));
     }
+
     runtime->request_ready.notify_one();
     return result_ok();
+}
+
+bool provider_runtime_cancel_queued(ProviderRuntime* runtime, TurnId turn_id) {
+    std::lock_guard lock(runtime->request_mutex);
+    std::queue<TurnRequest> remaining;
+    bool cancelled = false;
+    while (!runtime->requests.empty()) {
+        TurnRequest request = std::move(runtime->requests.front());
+        runtime->requests.pop();
+        if (request.turn_id == turn_id) {
+            cancelled = true;
+            Event event{EventKind::TurnCompleted, request.conversation_id, request.turn_id};
+            provider_runtime_emit(runtime, &event);
+        } else {
+            remaining.push(std::move(request));
+        }
+    }
+    runtime->requests.swap(remaining);
+    return cancelled;
 }
 
 std::vector<Event> provider_runtime_poll_events(ProviderRuntime* runtime) {
@@ -80,4 +103,7 @@ void provider_runtime_shutdown(ProviderRuntime* runtime) {
     runtime->request_ready.notify_all();
     if (runtime->worker.joinable())
         runtime->worker.join();
+    for (std::thread& worker : runtime->turn_workers)
+        worker.join();
+    runtime->turn_workers.clear();
 }

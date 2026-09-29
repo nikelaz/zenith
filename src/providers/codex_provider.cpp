@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
+#include <map>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -43,10 +44,12 @@ struct CodexState {
     ProviderRuntime runtime;
     CodexOptions options;
     std::mutex active_mutex;
-    ChildProcess* active_process = nullptr;
+    struct ActiveTurn {
+        ChildProcess* process = nullptr;
+        bool cancelled = false;
+    };
+    std::map<TurnId, ActiveTurn> active_turns;
     ChildProcess* startup_process = nullptr;
-    TurnId active_turn_id = 0;
-    bool cancel_requested = false;
     bool shutting_down = false;
     std::mutex startup_mutex;
     bool startup_complete = false;
@@ -606,8 +609,9 @@ Result run_codex(CodexState* state, const TurnRequest* request,
 
     {
         std::lock_guard lock(state->active_mutex);
-        state->active_process = &process;
-        if (state->cancel_requested || state->shutting_down)
+        auto& active = state->active_turns.at(request->turn_id);
+        active.process = &process;
+        if (active.cancelled || state->shutting_down)
             child_process_terminate(&process);
     }
 
@@ -686,8 +690,7 @@ Result run_codex(CodexState* state, const TurnRequest* request,
 
     {
         std::lock_guard lock(state->active_mutex);
-        if (state->active_process == &process)
-            state->active_process = nullptr;
+        state->active_turns.at(request->turn_id).process = nullptr;
     }
     child_process_stop(&process);
     if (!success)
@@ -710,12 +713,8 @@ void process_codex(void* context, const TurnRequest* request, ProviderRuntime* r
     bool cancelled = false;
     {
         std::lock_guard lock(state->active_mutex);
-        cancelled = state->active_turn_id == request->turn_id && state->cancel_requested;
-        if (state->active_turn_id == request->turn_id) {
-            state->active_turn_id = 0;
-            state->active_process = nullptr;
-            state->cancel_requested = false;
-        }
+        cancelled = state->active_turns.at(request->turn_id).cancelled;
+        state->active_turns.erase(request->turn_id);
     }
     if (cancelled)
         return;
@@ -757,16 +756,12 @@ Result submit_codex(Provider* provider, TurnRequest request) {
     const TurnId turn_id = request.turn_id;
     {
         std::lock_guard lock(state->active_mutex);
-        state->active_turn_id = turn_id;
-        state->cancel_requested = false;
+        state->active_turns.emplace(turn_id, CodexState::ActiveTurn{});
     }
     Result result = provider_runtime_submit(&state->runtime, std::move(request));
     if (result.status == ResultStatus::Error) {
         std::lock_guard lock(state->active_mutex);
-        if (state->active_turn_id == turn_id) {
-            state->active_turn_id = 0;
-            state->cancel_requested = false;
-        }
+        state->active_turns.erase(turn_id);
     }
     return result;
 }
@@ -777,12 +772,18 @@ Result respond_codex(Provider*, const ProviderRequestId&, ApprovalDecision) {
 
 void cancel_codex(Provider* provider, TurnId turn_id) {
     CodexState* state = static_cast<CodexState*>(provider->state);
+    const bool queued = provider_runtime_cancel_queued(&state->runtime, turn_id);
     std::lock_guard lock(state->active_mutex);
-    if (turn_id == 0 || state->active_turn_id != turn_id)
+    if (queued) {
+        state->active_turns.erase(turn_id);
         return;
-    state->cancel_requested = true;
-    if (state->active_process != nullptr && child_process_running(state->active_process))
-        child_process_terminate(state->active_process);
+    }
+    auto active = state->active_turns.find(turn_id);
+    if (turn_id == 0 || active == state->active_turns.end())
+        return;
+    active->second.cancelled = true;
+    if (active->second.process != nullptr && child_process_running(active->second.process))
+        child_process_terminate(active->second.process);
 }
 
 std::vector<Event> poll_codex(Provider* provider) {
@@ -805,8 +806,9 @@ void destroy_codex(Provider* provider) {
     {
         std::lock_guard lock(state->active_mutex);
         state->shutting_down = true;
-        if (state->active_process != nullptr && child_process_running(state->active_process))
-            child_process_terminate(state->active_process);
+        for (auto& [id, active] : state->active_turns)
+            if (active.process != nullptr && child_process_running(active.process))
+                child_process_terminate(active.process);
         if (state->startup_process != nullptr && child_process_running(state->startup_process))
             child_process_terminate(state->startup_process);
         if (state->usage_process != nullptr && child_process_running(state->usage_process))

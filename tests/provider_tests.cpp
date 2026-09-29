@@ -67,12 +67,13 @@ void runtime_process(void* opaque, const TurnRequest* request, ProviderRuntime* 
     auto* context = static_cast<RuntimeContext*>(opaque);
     {
         std::unique_lock lock(context->mutex);
-        if (context->block_first && context->processed.empty()) {
+        if (context->block_first && request->turn_id == 1) {
             context->first_started = true;
             context->ready.notify_all();
             context->ready.wait(lock, [context] { return context->release_first; });
         }
         context->processed.push_back(request->turn_id);
+        context->ready.notify_all();
     }
     const Event event{EventKind::TurnCompleted, request->conversation_id,
                       request->turn_id, std::to_string(request->turn_id), {}, {}};
@@ -124,7 +125,7 @@ TEST(ProviderRuntime, RejectsSubmitBeforeStart) {
     provider_runtime_shutdown(&runtime);
 }
 
-TEST(ProviderRuntime, ProcessesQueuedRequestsInOrderAndEmitsOrderedEvents) {
+TEST(ProviderRuntime, ProcessesRequestsAndEmitsEvents) {
     RuntimeContext context;
     ProviderRuntime runtime;
     provider_runtime_init(&runtime, runtime_process, &context);
@@ -137,12 +138,10 @@ TEST(ProviderRuntime, ProcessesQueuedRequestsInOrderAndEmitsOrderedEvents) {
               ResultStatus::Ok);
     provider_runtime_shutdown(&runtime);
 
-    EXPECT_EQ(context.processed, (std::vector<TurnId>{1, 2, 3}));
+    EXPECT_EQ(context.processed.size(), 3u);
     const auto events = provider_runtime_poll_events(&runtime);
     ASSERT_EQ(events.size(), 3u);
-    EXPECT_EQ(events[0].conversation_id, "first");
-    EXPECT_EQ(events[1].conversation_id, "second");
-    EXPECT_EQ(events[2].conversation_id, "third");
+    EXPECT_EQ(events.size(), 3u);
     EXPECT_EQ(events[0].kind, EventKind::TurnCompleted);
     EXPECT_TRUE(provider_runtime_poll_events(&runtime).empty());
 }
@@ -188,6 +187,40 @@ TEST(ProviderRuntime, ShutdownDrainsQueuedWork) {
     EXPECT_EQ(provider_runtime_poll_events(&runtime).size(), 2u);
 }
 
+TEST(ProviderRuntime, RunsDifferentConversationsConcurrently) {
+    RuntimeContext context;
+    context.block_first = true;
+    ProviderRuntime runtime{};
+    provider_runtime_init(&runtime, runtime_process, &context);
+    ASSERT_EQ(provider_runtime_start(&runtime).status, ResultStatus::Ok);
+    ASSERT_EQ(provider_runtime_submit(&runtime, runtime_request(1, "first")).status,
+              ResultStatus::Ok);
+    {
+        std::unique_lock lock(context.mutex);
+        ASSERT_TRUE(context.ready.wait_for(lock, std::chrono::seconds(2),
+                                           [&context] { return context.first_started; }));
+    }
+    ASSERT_EQ(provider_runtime_submit(&runtime, runtime_request(2, "second")).status,
+              ResultStatus::Ok);
+    {
+        std::unique_lock lock(context.mutex);
+        ASSERT_TRUE(context.ready.wait_for(lock, std::chrono::seconds(2),
+                                           [&context] { return !context.processed.empty(); }));
+        EXPECT_EQ(context.processed.front(), 2u);
+    }
+    {
+        std::lock_guard lock(context.mutex);
+        context.release_first = true;
+    }
+    context.ready.notify_all();
+    provider_runtime_shutdown(&runtime);
+    EXPECT_EQ(context.processed, (std::vector<TurnId>{2, 1}));
+    const auto events = provider_runtime_poll_events(&runtime);
+    ASSERT_EQ(events.size(), 2u);
+    EXPECT_EQ(events[0].turn_id, 2u);
+    EXPECT_EQ(events[0].kind, EventKind::TurnCompleted);
+}
+
 TEST(PersistentStore, SavesAndLoadsProjectsThreadsMessagesAndSelection) {
     TemporaryDatabase database;
     ApplicationState saved;
@@ -207,6 +240,12 @@ TEST(PersistentStore, SavesAndLoadsProjectsThreadsMessagesAndSelection) {
     };
     saved.selected_project = 1;
     saved.selected_thread = 0;
+    saved.projects[0].threads[0].provider = "Codex";
+    saved.projects[0].threads[0].model = "gpt-6-luna";
+    saved.projects[0].threads[0].reasoning_effort = "high";
+    saved.projects[0].threads[0].permission_mode = "workspace-write";
+    saved.projects[1].threads[0].provider = "GitHub Copilot";
+    saved.projects[1].threads[0].model = "auto";
     {
         PersistentStore store;
         ASSERT_EQ(store.open(database.string()).status, ResultStatus::Ok);
@@ -226,6 +265,12 @@ TEST(PersistentStore, SavesAndLoadsProjectsThreadsMessagesAndSelection) {
     EXPECT_FALSE(loaded.projects[1].expanded);
     ASSERT_EQ(loaded.projects[0].threads.size(), 1u);
     EXPECT_EQ(loaded.projects[0].threads[0].id, "thread-1");
+    EXPECT_EQ(loaded.projects[0].threads[0].provider, "Codex");
+    EXPECT_EQ(loaded.projects[0].threads[0].model, "gpt-6-luna");
+    EXPECT_EQ(loaded.projects[0].threads[0].reasoning_effort, "high");
+    EXPECT_EQ(loaded.projects[0].threads[0].permission_mode, "workspace-write");
+    EXPECT_EQ(loaded.projects[1].threads[0].provider, "GitHub Copilot");
+    EXPECT_EQ(loaded.projects[1].threads[0].model, "auto");
     ASSERT_EQ(loaded.projects[0].threads[0].messages.size(), 2u);
     EXPECT_EQ(loaded.projects[0].threads[0].messages[0].role, ChatMessageRole::User);
     EXPECT_EQ(loaded.projects[0].threads[0].messages[0].content, "question");

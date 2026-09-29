@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cfloat>
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <initializer_list>
 #include <limits>
@@ -146,6 +147,39 @@ void begin_chat_component() {
         ImGui::SetCursorScreenPos(position);
     }
     has_chat_component = true;
+}
+
+void render_working_indicator() {
+    begin_chat_component();
+    constexpr const char* label = "Working...";
+    const float indicator_size = ui_size(14.0f);
+    const float gap = ui_size(8.0f);
+    const float line_height = ImGui::GetTextLineHeight();
+    const float row_height = std::max(indicator_size, line_height);
+    const ImVec2 position = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(indicator_size + gap + ImGui::CalcTextSize(label).x, row_height));
+
+    const ImVec2 center(position.x + indicator_size * 0.5f,
+                        position.y + row_height * 0.5f);
+    const float radius = indicator_size * 0.32f;
+    const float dot_radius = ui_size(1.5f);
+    const float phase = static_cast<float>(std::fmod(ImGui::GetTime() * 2.0, 2.0 * IM_PI));
+    const ImVec4 text_color = ImGui::GetStyle().Colors[ImGuiCol_Text];
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    for (int index = 0; index < 8; ++index) {
+        const float angle = static_cast<float>(index) * (2.0f * IM_PI / 8.0f);
+        const float pulse = (std::cos(angle - phase) + 1.0f) * 0.5f;
+        const ImU32 color = ImGui::GetColorU32(ImVec4(
+            text_color.x, text_color.y, text_color.z, text_color.w * (0.2f + pulse * 0.8f)));
+        draw_list->AddCircleFilled(
+            ImVec2(center.x + std::cos(angle) * radius,
+                   center.y + std::sin(angle) * radius),
+            dot_radius, color);
+    }
+    draw_list->AddText(
+        ImVec2(position.x + indicator_size + gap,
+               position.y + (row_height - ImGui::GetFontSize()) * 0.5f),
+        ImGui::GetColorU32(ImGuiCol_TextDisabled), label);
 }
 
 struct TextSpan {
@@ -394,6 +428,12 @@ protected:
             begin_chat_component();
             render_code_card(code, language, monospace_font);
         }
+    }
+
+    void BLOCK_TABLE(const MD_BLOCK_TABLE_DETAIL* detail, bool entering) override {
+        if (entering)
+            begin_chat_component();
+        imgui_md::BLOCK_TABLE(detail, entering);
     }
 
     void CODE_TEXT(const char* begin, const char* end) override {
@@ -1362,7 +1402,7 @@ void render_file_picker(ChatPanelState& panel_state, std::string& input,
 }
 
 void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& providers,
-                       ChatPanelState& panel_state,
+                       ChatPanelState& panel_state, TurnId& next_turn_id,
                        const std::shared_ptr<FileDialogQueue>& dialog_queue,
                        SDL_Window* window) {
     std::string& message_input = panel_state.message_input;
@@ -1372,8 +1412,15 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
     std::string& selected_permission_mode = panel_state.selected_permission_mode;
     bool& is_generating = panel_state.is_generating;
     TurnId& active_turn_id = panel_state.active_turn_id;
-    TurnId& next_turn_id = panel_state.next_turn_id;
     ImFont* monospace_font = panel_state.monospace_font;
+    if (providers.empty()) {
+        ImGui::Begin("Chat");
+        ImGui::TextUnformatted("No providers configured.");
+        ImGui::End();
+        return;
+    }
+    if (selected_provider >= providers.size())
+        selected_provider = 0;
     Provider* provider = providers[selected_provider].get();
     if (!is_generating && provider->availability != ProviderAvailability::Available) {
         for (std::size_t index = 0; index < providers.size(); ++index) {
@@ -1556,6 +1603,10 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             ImGui::EndGroup();
             ImGui::PopID();
         }
+        const bool response_started = !thread.messages.empty() &&
+            thread.messages.back().role == ChatMessageRole::Assistant;
+        if (is_generating && !response_started)
+            render_working_indicator();
         ImGui::PopStyleVar();
         ImGuiIO& io = ImGui::GetIO();
         const bool mouse_over_messages = io.MousePos.x >= messages_min.x &&

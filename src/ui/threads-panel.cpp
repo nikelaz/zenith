@@ -342,8 +342,6 @@ void render_threads_panel(ApplicationState& state,
         if (header_clicked)
             project.expanded = !project.expanded;
 
-        ImDrawList* draw_list = ImGui::GetWindowDrawList();
-
         const ImVec2 arrow_center(header_min.x + row_height * 0.31f,
                                   header_min.y + row_height * 0.5f);
         ImVec2 arrow_points[3];

@@ -11,6 +11,7 @@ struct SDL_GPUTexture;
 struct SDL_Window;
 
 struct ChatPanelState {
+    bool initialized = false;
     std::string message_input;
     std::size_t selected_provider = 0;
     std::string selected_model;
@@ -18,7 +19,6 @@ struct ChatPanelState {
     std::string selected_permission_mode;
     bool is_generating = false;
     TurnId active_turn_id = 0;
-    TurnId next_turn_id = 1;
     ImFont* monospace_font = nullptr;
     SDL_GPUTexture* attachment_icon_texture = nullptr;
     SDL_GPUTexture* paperclip_icon_texture = nullptr;
@@ -41,7 +41,7 @@ struct ChatPanelState {
 };
 
 void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& providers,
-                       ChatPanelState& panel_state,
+                       ChatPanelState& panel_state, TurnId& next_turn_id,
                        const std::shared_ptr<FileDialogQueue>& dialog_queue,
                        SDL_Window* window);
 void apply_attachment_result(ChatPanelState& panel_state, const FileDialogResult& result);

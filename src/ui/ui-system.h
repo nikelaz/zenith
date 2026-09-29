@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <vector>
+#include <unordered_map>
 
 struct ImGuiContext;
 struct ImFont;
@@ -41,6 +42,8 @@ private:
     ApplicationState& m_state;
     std::vector<ProviderPtr>& m_providers;
     ChatPanelState m_chat_panel_state;
+    std::unordered_map<std::string, ChatPanelState> m_thread_panels;
+    TurnId m_next_turn_id = 1;
     std::shared_ptr<FileDialogQueue> m_file_dialog_queue =
         std::make_shared<FileDialogQueue>();
     std::vector<std::optional<UsageSnapshot>> m_usage_snapshots;

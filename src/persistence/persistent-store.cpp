@@ -227,7 +227,11 @@ Result PersistentStore::open(const std::string& path) {
         "  title TEXT NOT NULL,"
         "  description TEXT NOT NULL,"
         "  thread_id TEXT NOT NULL DEFAULT '',"
-        "  project_position INTEGER NOT NULL DEFAULT 0"
+        "  project_position INTEGER NOT NULL DEFAULT 0,"
+        "  provider TEXT NOT NULL DEFAULT '',"
+        "  model TEXT NOT NULL DEFAULT '',"
+        "  reasoning_effort TEXT NOT NULL DEFAULT '',"
+        "  permission_mode TEXT NOT NULL DEFAULT ''"
         ");"
         "CREATE TABLE IF NOT EXISTS messages ("
         "  thread_position INTEGER NOT NULL REFERENCES threads(position) ON DELETE CASCADE,"
@@ -277,6 +281,15 @@ Result PersistentStore::open(const std::string& path) {
             "Failed to add project ownership to saved threads");
         if (migration.status == ResultStatus::Error)
             return migration;
+    }
+    for (const char* column : {"provider", "model", "reasoning_effort", "permission_mode"}) {
+        if (!has_column(m_database, "threads", column)) {
+            const std::string sql = "ALTER TABLE threads ADD COLUMN " +
+                std::string(column) + " TEXT NOT NULL DEFAULT ''";
+            Result migration = execute(sql.c_str(), "Failed to add thread provider settings");
+            if (migration.status == ResultStatus::Error)
+                return migration;
+        }
     }
     return result_ok();
 }
@@ -380,7 +393,7 @@ Result PersistentStore::load(ApplicationState& state) {
     if (!prepare(m_database, "SELECT position, directory, expanded FROM projects ORDER BY position",
                  project_statement) ||
         !prepare(m_database,
-                 "SELECT position, title, description, thread_id, project_position FROM threads ORDER BY position",
+                 "SELECT position, title, description, thread_id, project_position, provider, model, reasoning_effort, permission_mode FROM threads ORDER BY position",
                  thread_statement) ||
         !prepare(m_database,
                  "SELECT role, content, reasoning, segments, attachments FROM messages WHERE thread_position = ? ORDER BY position",
@@ -415,6 +428,10 @@ Result PersistentStore::load(ApplicationState& state) {
         };
         if (thread.id.empty())
             thread.id = "legacy-thread-" + std::to_string(position);
+        thread.provider = column_text(thread_statement.get(), 5);
+        thread.model = column_text(thread_statement.get(), 6);
+        thread.reasoning_effort = column_text(thread_statement.get(), 7);
+        thread.permission_mode = column_text(thread_statement.get(), 8);
 
         if (sqlite3_bind_int(message_statement.get(), 1, position) != SQLITE_OK) {
             return fail("Failed to load saved messages");
@@ -514,7 +531,7 @@ Result PersistentStore::save(const ApplicationState& state) {
                  "INSERT INTO projects(position, directory, expanded) VALUES(?, ?, ?)",
                  project_statement) ||
         !prepare(m_database,
-                 "INSERT INTO threads(position, title, description, thread_id, project_position) VALUES(?, ?, ?, ?, ?)",
+                 "INSERT INTO threads(position, title, description, thread_id, project_position, provider, model, reasoning_effort, permission_mode) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
                  thread_statement) ||
         !prepare(m_database,
                  "INSERT INTO messages(thread_position, position, role, content, reasoning, segments, attachments) VALUES(?, ?, ?, ?, ?, ?, ?)",
@@ -552,6 +569,10 @@ Result PersistentStore::save(const ApplicationState& state) {
             sqlite3_bind_text(thread_statement.get(), 3, thread.description.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(thread_statement.get(), 4, thread.id.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_int(thread_statement.get(), 5, static_cast<int>(project_index));
+            sqlite3_bind_text(thread_statement.get(), 6, thread.provider.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(thread_statement.get(), 7, thread.model.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(thread_statement.get(), 8, thread.reasoning_effort.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_text(thread_statement.get(), 9, thread.permission_mode.c_str(), -1, SQLITE_TRANSIENT);
             if (sqlite3_step(thread_statement.get()) != SQLITE_DONE)
                 return rollback(fail("Failed to save thread"));
             sqlite3_reset(thread_statement.get());
