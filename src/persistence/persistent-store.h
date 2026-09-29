@@ -7,6 +7,14 @@
 #include <string_view>
 
 struct sqlite3;
+struct WindowState {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    bool maximized = false;
+};
+
 class PersistentStore {
 private:
     sqlite3* m_database = nullptr;
@@ -25,6 +33,8 @@ public:
     Result open(const std::string& path);
     Result load(ApplicationState& state);
     Result save(const ApplicationState& state);
+    Result load_window(WindowState* window);
+    Result save_window(const WindowState& window);
     void close();
 };
 

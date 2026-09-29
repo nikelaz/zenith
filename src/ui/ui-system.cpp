@@ -377,6 +377,30 @@ Result UISystem::init() {
 SDL_HitTestResult SDLCALL UISystem::title_bar_hit_test(SDL_Window*, const SDL_Point* point,
                                                        void* user_data) {
     auto* ui = static_cast<UISystem*>(user_data);
+    int window_width = 0;
+    int window_height = 0;
+    SDL_GetWindowSize(ui->m_window, &window_width, &window_height);
+    constexpr int resize_border = 8;
+    const bool left = point->x < resize_border;
+    const bool right = point->x >= window_width - resize_border;
+    const bool top = point->y < resize_border;
+    const bool bottom = point->y >= window_height - resize_border;
+    if (top && left)
+        return SDL_HITTEST_RESIZE_TOPLEFT;
+    if (top && right)
+        return SDL_HITTEST_RESIZE_TOPRIGHT;
+    if (bottom && left)
+        return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+    if (bottom && right)
+        return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+    if (top)
+        return SDL_HITTEST_RESIZE_TOP;
+    if (bottom)
+        return SDL_HITTEST_RESIZE_BOTTOM;
+    if (left)
+        return SDL_HITTEST_RESIZE_LEFT;
+    if (right)
+        return SDL_HITTEST_RESIZE_RIGHT;
     if (point->y < 0 || point->y >= ui->m_title_bar_height)
         return SDL_HITTEST_NORMAL;
     for (const SDL_Rect& bounds : ui->m_title_bar_interactive_bounds) {

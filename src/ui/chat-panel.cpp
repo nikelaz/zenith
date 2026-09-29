@@ -508,19 +508,26 @@ ImVec2 measure_text(ImFont* font, float font_size, const std::string& text,
 
 std::string elide_tool_title(const std::string& title, float max_width, ImFont* font,
                              float font_size) {
-    if (measure_text(font, font_size, title).x <= max_width)
+    const std::size_t line_end = title.find_first_of("\r\n");
+    const std::string first_line = title.substr(0, line_end);
+    if (line_end == std::string::npos &&
+        measure_text(font, font_size, first_line).x <= max_width)
         return title;
 
-    std::size_t end = title.size();
-    while (end > 0) {
-        const std::string candidate = title.substr(0, end) + "...";
+    if (measure_text(font, font_size, "...").x > max_width)
+        return "";
+    std::size_t end = first_line.size();
+    while (true) {
+        const std::string candidate = first_line.substr(0, end) + "...";
         if (measure_text(font, font_size, candidate).x <= max_width)
             return candidate;
+        if (end == 0)
+            break;
         --end;
-        while (end > 0 && (static_cast<unsigned char>(title[end]) & 0xc0) == 0x80)
+        while (end > 0 && (static_cast<unsigned char>(first_line[end]) & 0xc0) == 0x80)
             --end;
     }
-    return "...";
+    return "";
 }
 
 std::size_t wrapped_line_count(const std::string& text, float width,

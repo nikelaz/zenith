@@ -394,7 +394,6 @@ void imgui_md::render_text(const char* str, const char* str_end)
 {
 	if (!m_table_active && (m_is_table_header || m_is_table_body))
 		return;
-	const float scale = ImGui::GetIO().FontGlobalScale;
 	const ImGuiStyle& s = ImGui::GetStyle();
 	bool is_lf = false;
 
@@ -411,9 +410,7 @@ void imgui_md::render_text(const char* str, const char* str_end)
 			ImGui::NewLine();
 			width = ImGui::GetContentRegionAvail().x;
 		}
-		te = ImGui::GetFont()->CalcWordWrapPositionA(scale, str, str_end, width);
-		if (te == str)
-			++te;
+		te = ImGui::GetFont()->CalcWordWrapPosition(ImGui::GetFontSize(), str, str_end, width);
 
 		ImGui::TextUnformatted(str, te);
 		TEXT_RENDERED(str, te);

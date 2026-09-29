@@ -135,6 +135,56 @@ PersistentStore::~PersistentStore() {
     close();
 }
 
+Result PersistentStore::load_window(WindowState* window) {
+    Statement statement;
+    if (!prepare(m_database,
+                 "SELECT name, value FROM settings WHERE name IN "
+                 "('window_x', 'window_y', 'window_width', 'window_height', 'window_maximized')",
+                 statement))
+        return fail("Failed to load window state");
+    int step = SQLITE_ROW;
+    while ((step = sqlite3_step(statement.get())) == SQLITE_ROW) {
+        const std::string name = column_text(statement.get(), 0);
+        const int value = sqlite3_column_int(statement.get(), 1);
+        if (name == "window_x") window->x = value;
+        else if (name == "window_y") window->y = value;
+        else if (name == "window_width") window->width = value;
+        else if (name == "window_height") window->height = value;
+        else if (name == "window_maximized") window->maximized = value != 0;
+    }
+    if (step != SQLITE_DONE)
+        return fail("Failed to load window state");
+    return result_ok();
+}
+
+Result PersistentStore::save_window(const WindowState& window) {
+    Statement statement;
+    if (!prepare(m_database,
+                 "INSERT INTO settings(name, value) VALUES(?, ?) "
+                 "ON CONFLICT(name) DO UPDATE SET value = excluded.value", statement))
+        return fail("Failed to save window state");
+    const std::pair<const char*, int> values[] = {
+        {"window_x", window.x}, {"window_y", window.y},
+        {"window_width", window.width}, {"window_height", window.height},
+        {"window_maximized", window.maximized ? 1 : 0}
+    };
+    Result result = execute("BEGIN", "Failed to begin saving window state");
+    if (result.status == ResultStatus::Error)
+        return result;
+    for (const auto& [name, value] : values) {
+        sqlite3_bind_text(statement.get(), 1, name, -1, SQLITE_STATIC);
+        sqlite3_bind_int(statement.get(), 2, value);
+        if (sqlite3_step(statement.get()) != SQLITE_DONE) {
+            Result error = fail("Failed to save window state");
+            sqlite3_exec(m_database, "ROLLBACK", nullptr, nullptr, nullptr);
+            return error;
+        }
+        sqlite3_reset(statement.get());
+        sqlite3_clear_bindings(statement.get());
+    }
+    return execute("COMMIT", "Failed to commit window state");
+}
+
 Result PersistentStore::fail(std::string_view operation) {
     m_last_error.assign(operation);
     m_last_error += ": ";

@@ -26,6 +26,7 @@ private:
     SDL_GPUDevice* m_gpu_device = nullptr;
     ApplicationState m_state;
     PersistentStore m_state_store;
+    WindowState m_window_state;
     std::vector<ProviderPtr> m_providers;
 
     Result window_init();

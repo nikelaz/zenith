@@ -8,12 +8,13 @@
 #include "application.h"
 #include "base/result.h"
 #include "platform/message-box.h"
+#include <cmath>
 #include <filesystem>
 #include <string>
 #include <system_error>
 
-constexpr int kWindowWidth = 1440;
-constexpr int kWindowHeight = 900;
+constexpr int kWindowWidth = 1280;
+constexpr int kWindowHeight = 720;
 
 namespace {
 Result application_database_path(std::filesystem::path* path) {
@@ -75,6 +76,23 @@ Result Application::init() {
         deinit();
         return state_result;
     }
+    state_result = m_state_store.load_window(&m_window_state);
+    if (state_result.status == ResultStatus::Error) {
+        deinit();
+        return state_result;
+    }
+    if (m_window_state.width > 0 && m_window_state.height > 0) {
+        if (!SDL_SetWindowSize(m_window, m_window_state.width, m_window_state.height) ||
+            !SDL_SetWindowPosition(m_window, m_window_state.x, m_window_state.y) ||
+            (m_window_state.maximized && !SDL_MaximizeWindow(m_window))) {
+            const std::string error = SDL_GetError();
+            deinit();
+            return result_error("Failed to restore window state: " + error);
+        }
+    } else {
+        SDL_GetWindowPosition(m_window, &m_window_state.x, &m_window_state.y);
+        SDL_GetWindowSize(m_window, &m_window_state.width, &m_window_state.height);
+    }
 
     m_providers.push_back(make_codex_provider());
     GitHubCopilotOptions copilot_options;
@@ -107,6 +125,11 @@ void Application::deinit() {
     }
 
     if (m_initialized) {
+        Result window_result = m_state_store.save_window(m_window_state);
+        if (window_result.status == ResultStatus::Error) {
+            const std::string error_message(window_result.error);
+            show_error_message(error_message.c_str(), m_window);
+        }
         Result state_result = m_state_store.save(m_state);
         if (state_result.status == ResultStatus::Error) {
             const std::string error_message(state_result.error);
@@ -125,7 +148,26 @@ Result Application::window_init() {
     if (!SDL_Init(SDL_INIT_VIDEO))
         return result_error(std::string("Failed to initialize SDL: ") + SDL_GetError());
 
-    m_window = SDL_CreateWindow("Zenith", kWindowWidth, kWindowHeight,
+    int window_width = kWindowWidth;
+    int window_height = kWindowHeight;
+#ifdef _WIN32
+    const SDL_DisplayID primary_display = SDL_GetPrimaryDisplay();
+    if (primary_display == 0) {
+        const std::string error = SDL_GetError();
+        SDL_Quit();
+        return result_error("Failed to determine the primary display: " + error);
+    }
+    const float display_scale = SDL_GetDisplayContentScale(primary_display);
+    if (display_scale <= 0.0f) {
+        const std::string error = SDL_GetError();
+        SDL_Quit();
+        return result_error("Failed to determine the primary display scale: " + error);
+    }
+    window_width = static_cast<int>(std::lround(kWindowWidth * display_scale));
+    window_height = static_cast<int>(std::lround(kWindowHeight * display_scale));
+#endif
+
+    m_window = SDL_CreateWindow("Zenith", window_width, window_height,
                                 SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS |
                                     SDL_WINDOW_HIGH_PIXEL_DENSITY);
     if (m_window == nullptr) {
@@ -189,6 +231,21 @@ void Application::run() {
     while (!m_quit_requested) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_WINDOW_MAXIMIZED &&
+                event.window.windowID == SDL_GetWindowID(m_window))
+                m_window_state.maximized = true;
+            if (event.type == SDL_EVENT_WINDOW_RESTORED &&
+                event.window.windowID == SDL_GetWindowID(m_window))
+                m_window_state.maximized = false;
+            if ((event.type == SDL_EVENT_WINDOW_MOVED ||
+                 event.type == SDL_EVENT_WINDOW_RESIZED ||
+                 event.type == SDL_EVENT_WINDOW_RESTORED) &&
+                event.window.windowID == SDL_GetWindowID(m_window) &&
+                !(SDL_GetWindowFlags(m_window) & SDL_WINDOW_MAXIMIZED) &&
+                !m_window_state.maximized) {
+                SDL_GetWindowPosition(m_window, &m_window_state.x, &m_window_state.y);
+                SDL_GetWindowSize(m_window, &m_window_state.width, &m_window_state.height);
+            }
             if (event.type == SDL_EVENT_QUIT ||
                 (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
                  event.window.windowID == SDL_GetWindowID(m_window))) {
