@@ -2,11 +2,13 @@
 #define CHAT_PANEL_H
 #include "../providers/provider.h"
 #include "../state/application-state.h"
+#include "../platform/file-dialogs.h"
 #include <filesystem>
 #include <string>
 #include <vector>
 struct ImFont;
 struct SDL_GPUTexture;
+struct SDL_Window;
 
 struct ChatPanelState {
     std::string message_input;
@@ -39,5 +41,8 @@ struct ChatPanelState {
 };
 
 void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& providers,
-                       ChatPanelState& panel_state);
+                       ChatPanelState& panel_state,
+                       const std::shared_ptr<FileDialogQueue>& dialog_queue,
+                       SDL_Window* window);
+void apply_attachment_result(ChatPanelState& panel_state, const FileDialogResult& result);
 #endif

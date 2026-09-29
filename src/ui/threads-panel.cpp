@@ -1,4 +1,5 @@
 #include "threads-panel.h"
+#include "../platform/message-box.h"
 #include "imgui.h"
 #include "ui-scale.h"
 #include <algorithm>
@@ -7,7 +8,6 @@
 #include <filesystem>
 #include <optional>
 #include <string>
-#include <tinyfiledialogs.h>
 #include <utility>
 
 namespace {
@@ -77,21 +77,13 @@ void render_folder_icon(ImDrawList* draw_list, ImVec2 position, float size) {
     }
 }
 
-void open_project(ApplicationState& state) {
-    std::string default_path_storage;
-    if (state.selected_project < state.projects.size())
-        default_path_storage = state.projects[state.selected_project].directory.string();
-
-    char* selected_directory = tinyfd_selectFolderDialog("Open Project",
-        default_path_storage.empty() ? nullptr : default_path_storage.c_str());
-    if (selected_directory == nullptr)
-        return;
-
+void apply_open_project_selection(ApplicationState& state,
+                                  const std::filesystem::path& selected_directory,
+                                  SDL_Window* window) {
     std::error_code error;
     std::filesystem::path directory = normalized_directory(selected_directory, error);
     if (!std::filesystem::is_directory(directory, error) || error) {
-        tinyfd_messageBox("Zenith", "The selected project directory is unavailable.",
-                          "ok", "error", 1);
+        show_error_message("The selected project directory is unavailable.", window);
         return;
     }
 
@@ -109,6 +101,19 @@ void open_project(ApplicationState& state) {
     state.projects.push_back({std::move(directory), true, {}});
     state.selected_project = state.projects.size() - 1;
     state.selected_thread = 0;
+}
+
+void open_project(ApplicationState& state,
+                  const std::shared_ptr<FileDialogQueue>& dialog_queue,
+                  SDL_Window* window) {
+    std::u8string default_path_storage;
+    if (state.selected_project < state.projects.size())
+        default_path_storage = state.projects[state.selected_project].directory.u8string();
+
+    show_file_dialog(dialog_queue, FileDialogPurpose::OpenProject, window,
+                     default_path_storage.empty()
+                         ? nullptr
+                         : reinterpret_cast<const char*>(default_path_storage.c_str()));
 }
 
 void add_thread(ApplicationState& state, std::size_t project_index) {
@@ -230,11 +235,25 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
 }
 }
 
-void open_project_dialog(ApplicationState& state) {
-    open_project(state);
+void open_project_dialog(ApplicationState& state,
+                          const std::shared_ptr<FileDialogQueue>& dialog_queue,
+                          SDL_Window* window) {
+    open_project(state, dialog_queue, window);
 }
 
-void render_threads_panel(ApplicationState& state) {
+void apply_open_project_result(ApplicationState& state, const FileDialogResult& result,
+                               SDL_Window* window) {
+    if (!result.error.empty()) {
+        show_error_message(("Failed to open project dialog: " + result.error).c_str(), window);
+        return;
+    }
+    if (!result.paths.empty())
+        apply_open_project_selection(state, result.paths.front(), window);
+}
+
+void render_threads_panel(ApplicationState& state,
+                          const std::shared_ptr<FileDialogQueue>& dialog_queue,
+                          SDL_Window* window) {
     static std::optional<PendingThreadDelete> pending_delete;
     static std::optional<PendingProjectDelete> pending_project_delete;
     bool open_delete_confirmation = false;
@@ -276,7 +295,7 @@ void render_threads_panel(ApplicationState& state) {
         ImGui::SetTooltip("Open Project");
     ImGui::PopStyleVar();
     if (open_project_clicked)
-        open_project(state);
+        open_project(state, dialog_queue, window);
     ImGui::Spacing();
 
     for (std::size_t project_index = 0; project_index < state.projects.size(); ++project_index) {

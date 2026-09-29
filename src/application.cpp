@@ -7,10 +7,10 @@
 #endif
 #include "application.h"
 #include "base/result.h"
+#include "platform/message-box.h"
 #include <filesystem>
 #include <string>
 #include <system_error>
-#include <tinyfiledialogs.h>
 
 constexpr int kWindowWidth = 1440;
 constexpr int kWindowHeight = 900;
@@ -110,7 +110,7 @@ void Application::deinit() {
         Result state_result = m_state_store.save(m_state);
         if (state_result.status == ResultStatus::Error) {
             const std::string error_message(state_result.error);
-            tinyfd_messageBox("Zenith", error_message.c_str(), "ok", "error", 1);
+            show_error_message(error_message.c_str(), m_window);
         }
     }
     m_providers.clear();
@@ -176,13 +176,12 @@ void Application::window_deinit() {
 
 void Application::run() {
     if (!m_initialized) {
-        tinyfd_messageBox("Zenith", "Application has to be initialized with init() before run()",
-                          "ok", "error", 1);
+        show_error_message("Application has to be initialized with init() before run()", m_window);
         return;
     }
 
     if (!m_ui.has_value()) {
-        tinyfd_messageBox("Zenith", "UI System is not initialized in Application", "ok", "error", 1);
+        show_error_message("UI System is not initialized in Application", m_window);
         return;
     }
 

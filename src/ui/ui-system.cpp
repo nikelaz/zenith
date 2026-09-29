@@ -482,6 +482,14 @@ void UISystem::prepare_backbuffer() {
 }
 
 void UISystem::render_frame_to_backbuffer() {
+    for (const FileDialogResult& result : take_file_dialog_results(*m_file_dialog_queue)) {
+        if (result.purpose == FileDialogPurpose::OpenProject) {
+            apply_open_project_result(m_state, result, m_window);
+        } else {
+            apply_attachment_result(m_chat_panel_state, result);
+        }
+    }
+
     if (m_open_settings_requested) {
         m_open_settings_requested = false;
         open_settings_window();
@@ -623,7 +631,7 @@ void UISystem::render_frame_to_backbuffer() {
             static_cast<int>(file_menu_max.y - file_menu_min.y)};
         if (file_menu_open) {
             if (ImGui::MenuItem("Open Project..."))
-                open_project_dialog(m_state);
+                open_project_dialog(m_state, m_file_dialog_queue, m_window);
             ImGui::Separator();
             if (ImGui::MenuItem("Settings"))
                 m_open_settings_requested = true;
@@ -696,9 +704,10 @@ void UISystem::render_frame_to_backbuffer() {
     }
     render_dock_area();
     if (m_threads_panel_open)
-        render_threads_panel(m_state);
+        render_threads_panel(m_state, m_file_dialog_queue, m_window);
     if (m_chat_panel_open)
-        render_chat_panel(m_state, m_providers, m_chat_panel_state);
+        render_chat_panel(m_state, m_providers, m_chat_panel_state,
+                          m_file_dialog_queue, m_window);
 
     for (std::size_t index = 0; index < m_providers.size(); ++index) {
         Provider* provider = m_providers[index].get();

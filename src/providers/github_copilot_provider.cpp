@@ -66,10 +66,31 @@ std::string utc_timestamp() {
     return timestamp.str();
 }
 
+Json json_shape(const Json& value, int depth = 0) {
+    Json shape = {{"type", value.type_name()}};
+    if (depth >= 5)
+        return shape;
+    if (value.is_object()) {
+        Json fields = Json::object();
+        std::size_t count = 0;
+        for (auto it = value.begin(); it != value.end() && count < 40; ++it, ++count) {
+            if (it.key().size() <= 80)
+                fields[it.key()] = json_shape(it.value(), depth + 1);
+        }
+        shape["field_count"] = value.size();
+        shape["fields"] = std::move(fields);
+    } else if (value.is_array()) {
+        shape["length"] = value.size();
+        if (!value.empty())
+            shape["first_item"] = json_shape(value.front(), depth + 1);
+    }
+    return shape;
+}
+
 Json response_diagnostic(const Json& response) {
+    Json diagnostic = {{"shape", json_shape(response)}};
     if (!response.is_object())
-        return Json::object();
-    Json diagnostic = Json::object();
+        return diagnostic;
     if (response.contains("id"))
         diagnostic["id"] = response["id"];
     if (response.contains("error")) {
@@ -296,7 +317,8 @@ bool wait_for_response(ChildProcess* process, int request_id, StreamContext* con
             *error = "GitHub Copilot ACP server closed its output";
             return false;
         }
-        if (message.contains("id") && message["id"].is_number_integer() &&
+        if (message.is_object() && !message.contains("method") &&
+            message.contains("id") && message["id"].is_number_integer() &&
             message["id"].get<int>() == request_id) {
             if (response != nullptr)
                 *response = message;

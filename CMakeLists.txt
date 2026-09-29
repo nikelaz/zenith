@@ -32,7 +32,6 @@ set(SDL_X11_XSCRNSAVER OFF CACHE BOOL "Build SDL X11 screensaver support" FORCE)
 set(SDL_X11_XTEST OFF CACHE BOOL "Build SDL X11 test support" FORCE)
 add_subdirectory(third_party/SDL EXCLUDE_FROM_ALL)
 
-set_source_files_properties(third_party/tinyfiledialogs/tinyfiledialogs.c PROPERTIES LANGUAGE CXX)
 add_subdirectory(third_party/sqlite3 EXCLUDE_FROM_ALL)
 
 add_subdirectory(third_party/googletest EXCLUDE_FROM_ALL)
@@ -81,6 +80,8 @@ add_executable(Zenith
     src/base/result.cpp
     ${CHILD_PROCESS_SOURCE}
     ${CLIPBOARD_IMAGE_SOURCE}
+    src/platform/file-dialogs.cpp
+    src/platform/message-box.cpp
     src/providers/provider_runtime.cpp
     src/providers/codex_provider.cpp
     src/providers/github_copilot_provider.cpp
@@ -92,7 +93,6 @@ add_executable(Zenith
     src/ui/dock-area.cpp
     src/ui/threads-panel.cpp
     src/ui/ui-system.cpp
-    third_party/tinyfiledialogs/tinyfiledialogs.c
 )
 if(WIN32)
     file(TO_CMAKE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/zenith.ico" ZENITH_WINDOWS_ICON_PATH)
@@ -126,7 +126,7 @@ else()
             "$<TARGET_FILE_DIR:Zenith>/assets/icons"
     )
 endif()
-target_include_directories(Zenith PRIVATE third_party/tinyfiledialogs third_party/sqlite3 third_party/json/include)
+target_include_directories(Zenith PRIVATE third_party/sqlite3 third_party/json/include)
 target_link_libraries(Zenith PRIVATE imgui_md SQLite3)
 if(WIN32)
     target_link_libraries(Zenith PRIVATE gdiplus ole32 shell32)

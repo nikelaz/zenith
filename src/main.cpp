@@ -8,7 +8,7 @@
 #endif
 #include "application.h"
 #include "base/result.h"
-#include <tinyfiledialogs.h>
+#include "platform/message-box.h"
 #include <string>
 
 #ifdef _WIN32
@@ -22,7 +22,7 @@ int main() {
     Result app_init_result = app.init();
     if (app_init_result.status == ResultStatus::Error) {
         const std::string error_message(app_init_result.error);
-        tinyfd_messageBox("Zenith", error_message.c_str(), "ok", "error", 1);
+        show_error_message(error_message.c_str());
         return 1;
     }
 

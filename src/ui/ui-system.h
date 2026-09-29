@@ -2,11 +2,13 @@
 #define UI_SYSTEM_H
 
 #include "../base/result.h"
+#include "../platform/file-dialogs.h"
 #include "../providers/provider.h"
 #include "../state/application-state.h"
 #include "chat-panel.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -38,6 +40,8 @@ private:
     ApplicationState& m_state;
     std::vector<ProviderPtr>& m_providers;
     ChatPanelState m_chat_panel_state;
+    std::shared_ptr<FileDialogQueue> m_file_dialog_queue =
+        std::make_shared<FileDialogQueue>();
     std::vector<std::optional<UsageSnapshot>> m_usage_snapshots;
     std::vector<bool> m_usage_loading;
     SDL_GPUTexture* m_menu_icon_texture = nullptr;

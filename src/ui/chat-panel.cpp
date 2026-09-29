@@ -5,7 +5,6 @@
 #include "imgui_internal.h"
 #include "imgui_md.h"
 #include "misc/cpp/imgui_stdlib.h"
-#include <tinyfiledialogs.h>
 #include <algorithm>
 #include <cfloat>
 #include <cctype>
@@ -74,16 +73,9 @@ std::string attachment_media_type(const std::filesystem::path& path) {
     return "application/octet-stream";
 }
 
-void choose_attachments(ChatPanelState& panel_state) {
-    char* selection = tinyfd_openFileDialog("Attach files", nullptr, 0, nullptr, nullptr, 1);
-    if (selection == nullptr)
-        return;
-    std::string paths(selection);
-    std::size_t start = 0;
-    while (start < paths.size()) {
-        const std::size_t end = paths.find('|', start);
-        const std::filesystem::path path(paths.substr(start, end - start));
-        start = end == std::string::npos ? paths.size() : end + 1;
+void add_attachments(ChatPanelState& panel_state,
+                     const std::vector<std::filesystem::path>& paths) {
+    for (const std::filesystem::path& path : paths) {
         const std::string media_type = attachment_media_type(path);
         if (media_type.empty()) {
             panel_state.attachment_error = "Unsupported file type: " + path.filename().string();
@@ -1322,7 +1314,9 @@ void render_file_picker(ChatPanelState& panel_state, std::string& input,
 }
 
 void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& providers,
-                       ChatPanelState& panel_state) {
+                       ChatPanelState& panel_state,
+                       const std::shared_ptr<FileDialogQueue>& dialog_queue,
+                       SDL_Window* window) {
     std::string& message_input = panel_state.message_input;
     std::size_t& selected_provider = panel_state.selected_provider;
     std::string& selected_model = panel_state.selected_model;
@@ -1774,7 +1768,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         }
         if (attach_clicked) {
             panel_state.attachment_error.clear();
-            choose_attachments(panel_state);
+            show_file_dialog(dialog_queue, FileDialogPurpose::AttachFiles, window);
         }
         ImGui::SetCursorScreenPos(send_pos);
         const bool send_clicked = ImGui::InvisibleButton("##send-message", ImVec2(send_size, send_size));
@@ -1854,4 +1848,12 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         }
     }
     ImGui::End();
+}
+
+void apply_attachment_result(ChatPanelState& panel_state, const FileDialogResult& result) {
+    if (!result.error.empty()) {
+        panel_state.attachment_error = "Failed to open file dialog: " + result.error;
+        return;
+    }
+    add_attachments(panel_state, result.paths);
 }
