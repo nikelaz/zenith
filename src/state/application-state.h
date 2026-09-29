@@ -63,6 +63,7 @@ struct ChatProject {
 struct ApplicationState {
     int base_font_size = 16;
     float ui_scale = 1.0f;
+    bool collapse_tool_calls = true;
     std::vector<ChatProject> projects = {
         {
             {},

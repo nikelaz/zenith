@@ -36,7 +36,8 @@ private:
     float m_settings_dpi_scale = 0.0f;
     int m_title_bar_height = 0;
     bool m_appearance_edit_active = false;
-    bool m_settings_show_appearance = true;
+    enum class SettingsPage { Appearance, Chat, Providers };
+    SettingsPage m_settings_page = SettingsPage::Appearance;
     ApplicationState& m_state;
     std::vector<ProviderPtr>& m_providers;
     ChatPanelState m_chat_panel_state;

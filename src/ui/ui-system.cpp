@@ -980,16 +980,18 @@ void UISystem::render_settings_contents() {
                           ImGuiWindowFlags_NoScrollWithMouse);
     ImGui::TextDisabled("SETTINGS");
     ImGui::Spacing();
-    if (ImGui::Selectable("Appearance", m_settings_show_appearance))
-        m_settings_show_appearance = true;
-    if (ImGui::Selectable("Providers", !m_settings_show_appearance))
-        m_settings_show_appearance = false;
+    if (ImGui::Selectable("Appearance", m_settings_page == SettingsPage::Appearance))
+        m_settings_page = SettingsPage::Appearance;
+    if (ImGui::Selectable("Chat", m_settings_page == SettingsPage::Chat))
+        m_settings_page = SettingsPage::Chat;
+    if (ImGui::Selectable("Providers", m_settings_page == SettingsPage::Providers))
+        m_settings_page = SettingsPage::Providers;
     ImGui::EndChild();
     ImGui::SameLine();
 
     ImGui::BeginChild("##settings_content", ImVec2(0.0f, 0.0f));
     m_appearance_edit_active = false;
-    if (m_settings_show_appearance) {
+    if (m_settings_page == SettingsPage::Appearance) {
         ImGui::TextUnformatted("Appearance");
         ImGui::Spacing();
         ImGui::TextUnformatted("Base font size");
@@ -1008,7 +1010,13 @@ void UISystem::render_settings_contents() {
             m_state.ui_scale = 1.0f;
         }
     }
-    for (std::size_t index = 0; !m_settings_show_appearance && index < m_providers.size(); ++index) {
+    if (m_settings_page == SettingsPage::Chat) {
+        ImGui::TextUnformatted("Chat");
+        ImGui::Spacing();
+        ImGui::Checkbox("Collapse tool calls", &m_state.collapse_tool_calls);
+        ImGui::TextDisabled("Group consecutive tool calls under an expandable heading.");
+    }
+    for (std::size_t index = 0; m_settings_page == SettingsPage::Providers && index < m_providers.size(); ++index) {
         Provider& provider = *m_providers[index];
         const char* availability = "Checking...";
         ImVec4 availability_color = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];

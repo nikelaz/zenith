@@ -781,8 +781,8 @@ void render_expandable_card(const char* expanded_id_name, const std::string& tit
     const float status_x = title_right - status_size.x;
     const float title_max_width = std::max(
         0.0f, title_right - title_x - status_size.x - status_gap);
-    const std::string clipped_title = elide_tool_title(title, title_max_width, header_font,
-                                                       font_size);
+    const std::string clipped_title = icon == ActivityIcon::Reasoning
+        ? title : elide_tool_title(title, title_max_width, header_font, font_size);
     const ImVec2 title_size = measure_text(header_font, font_size, clipped_title);
     const float text_y = card_min.y + header_vertical_padding;
     const ImU32 icon_color = ImGui::GetColorU32(ImVec4(0.47f, 0.47f, 0.47f, 1.0f));
@@ -894,6 +894,47 @@ void render_reasoning(const std::string& reasoning) {
     ImFont* sans_font = ImGui::GetFont();
     render_expandable_card("##reasoning-expanded", "Reasoning", ActivityIcon::Reasoning,
                            reasoning, sans_font, sans_font, {}, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+}
+
+bool render_tool_group_header(std::size_t count) {
+    begin_chat_component();
+    const float row_height = ImGui::GetFrameHeight();
+    const ImVec2 min = ImGui::GetCursorScreenPos();
+    const bool clicked = ImGui::InvisibleButton("##tool-group",
+        ImVec2(std::max(1.0f, ImGui::GetContentRegionAvail().x), row_height),
+        ImGuiButtonFlags_EnableNav);
+    const bool hovered = ImGui::IsItemHovered();
+    const ImGuiID id = ImGui::GetID("##tool-group-expanded");
+    ImGuiStorage* storage = ImGui::GetStateStorage();
+    bool expanded = storage->GetBool(id, false);
+    if (clicked) {
+        expanded = !expanded;
+        storage->SetBool(id, expanded);
+    }
+    const ImVec2 center(min.x + row_height * 0.31f, min.y + row_height * 0.5f);
+    ImVec2 points[3];
+    if (expanded) {
+        points[0] = ImVec2(center.x - ui_size(3.2f), center.y - ui_size(2.0f));
+        points[1] = ImVec2(center.x, center.y + ui_size(2.0f));
+        points[2] = ImVec2(center.x + ui_size(3.2f), center.y - ui_size(2.0f));
+    } else {
+        points[0] = ImVec2(center.x - ui_size(2.0f), center.y - ui_size(3.2f));
+        points[1] = ImVec2(center.x + ui_size(2.0f), center.y);
+        points[2] = ImVec2(center.x - ui_size(2.0f), center.y + ui_size(3.2f));
+    }
+    const float shade = (expanded ? 0.64f : 0.48f) + (hovered ? 0.10f : 0.0f);
+    const ImU32 arrow_color = ImGui::GetColorU32(ImVec4(shade, shade, shade, 1.0f));
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    draw_list->AddLine(points[0], points[1], arrow_color, ui_size(1.6f));
+    draw_list->AddLine(points[1], points[2], arrow_color, ui_size(1.6f));
+    const float text_shade = std::min(1.0f,
+        (expanded ? 0.90f : 0.70f) + (hovered ? 0.10f : 0.0f));
+    const std::string label = std::to_string(count) + " tool calls";
+    draw_list->AddText(ImVec2(min.x + row_height * 0.69f,
+        min.y + (row_height - ImGui::GetTextLineHeight()) * 0.5f),
+        ImGui::GetColorU32(ImVec4(text_shade, text_shade, text_shade, 1.0f)),
+        label.c_str());
+    return expanded;
 }
 
 std::string renderable_assistant_text(const std::string& text,
@@ -1463,25 +1504,50 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
                     render_reasoning(message.reasoning);
                 if (!message.segments.empty()) {
                     for (std::size_t segment_index = 0;
-                         segment_index < message.segments.size(); ++segment_index) {
+                         segment_index < message.segments.size();) {
                         const ChatSegment& segment = message.segments[segment_index];
                         if (segment.kind == ChatSegment::Kind::Tool) {
-                            if (segment.tool.id.empty())
+                            std::size_t end = segment_index + 1;
+                            while (end < message.segments.size() &&
+                                   message.segments[end].kind == ChatSegment::Kind::Tool)
+                                ++end;
+                            bool show_tools = true;
+                            if (state.collapse_tool_calls) {
                                 ImGui::PushID(static_cast<int>(segment_index));
-                            else
-                                ImGui::PushID(segment.tool.id.c_str());
-                            render_tool_activity(segment.tool, monospace_font);
-                            ImGui::PopID();
+                                show_tools = render_tool_group_header(end - segment_index);
+                                ImGui::PopID();
+                            }
+                            if (show_tools) {
+                                for (std::size_t index = segment_index; index < end; ++index) {
+                                    if (message.segments[index].tool.id.empty())
+                                        ImGui::PushID(static_cast<int>(index));
+                                    else
+                                        ImGui::PushID(message.segments[index].tool.id.c_str());
+                                    render_tool_activity(message.segments[index].tool, monospace_font);
+                                    ImGui::PopID();
+                                }
+                            }
+                            segment_index = end;
                         } else if (!segment.text.empty()) {
                             render_markdown_text(markdown,
                                 renderable_assistant_text(segment.text, citation_attachments));
+                            ++segment_index;
+                        } else {
+                            ++segment_index;
                         }
                     }
                 } else {
-                    for (const std::string& activity : message.tool_activities) {
-                        ToolActivity tool;
-                        tool.command = activity;
-                        render_tool_activity(tool, monospace_font);
+                    bool show_tools = true;
+                    if (state.collapse_tool_calls && !message.tool_activities.empty())
+                        show_tools = render_tool_group_header(message.tool_activities.size());
+                    if (show_tools) {
+                        for (std::size_t index = 0; index < message.tool_activities.size(); ++index) {
+                            ToolActivity tool;
+                            tool.command = message.tool_activities[index];
+                            ImGui::PushID(static_cast<int>(index));
+                            render_tool_activity(tool, monospace_font);
+                            ImGui::PopID();
+                        }
                     }
                     render_markdown_text(markdown,
                         renderable_assistant_text(message.content, citation_attachments));

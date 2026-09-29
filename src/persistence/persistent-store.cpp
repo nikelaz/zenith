@@ -307,6 +307,15 @@ Result PersistentStore::load(ApplicationState& state) {
     } else if (appearance_result != SQLITE_DONE) {
         return fail("Failed to load UI scale");
     }
+    sqlite3_reset(appearance_statement.get());
+    sqlite3_clear_bindings(appearance_statement.get());
+    sqlite3_bind_text(appearance_statement.get(), 1, "collapse_tool_calls", -1, SQLITE_STATIC);
+    appearance_result = sqlite3_step(appearance_statement.get());
+    if (appearance_result == SQLITE_ROW) {
+        state.collapse_tool_calls = sqlite3_column_int(appearance_statement.get(), 0) != 0;
+    } else if (appearance_result != SQLITE_DONE) {
+        return fail("Failed to load tool call display setting");
+    }
 
     Statement count_statement;
     if (!prepare(m_database, "SELECT COUNT(*) FROM threads", count_statement)) {
@@ -593,6 +602,12 @@ Result PersistentStore::save(const ApplicationState& state) {
                      static_cast<int>(state.ui_scale * 1000.0f + 0.5f));
     if (sqlite3_step(appearance_statement.get()) != SQLITE_DONE)
         return rollback(fail("Failed to save UI scale"));
+    sqlite3_reset(appearance_statement.get());
+    sqlite3_clear_bindings(appearance_statement.get());
+    sqlite3_bind_text(appearance_statement.get(), 1, "collapse_tool_calls", -1, SQLITE_STATIC);
+    sqlite3_bind_int(appearance_statement.get(), 2, state.collapse_tool_calls ? 1 : 0);
+    if (sqlite3_step(appearance_statement.get()) != SQLITE_DONE)
+        return rollback(fail("Failed to save tool call display setting"));
     result = execute(
         "INSERT INTO settings(name, value) VALUES('projects_initialized', 1) "
         "ON CONFLICT(name) DO UPDATE SET value = excluded.value",
