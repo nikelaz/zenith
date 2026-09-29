@@ -42,17 +42,6 @@ else()
     set(CHILD_PROCESS_SOURCE src/process/child-process-posix.cpp)
 endif()
 
-if(WIN32)
-    set(CLIPBOARD_IMAGE_SOURCE src/platform/clipboard-image-win32.cpp)
-elseif(APPLE)
-    enable_language(OBJCXX)
-    set(CMAKE_OBJCXX_STANDARD 20)
-    set(CMAKE_OBJCXX_STANDARD_REQUIRED ON)
-    set(CLIPBOARD_IMAGE_SOURCE src/platform/clipboard-image-macos.mm)
-else()
-    set(CLIPBOARD_IMAGE_SOURCE src/platform/clipboard-image-linux.cpp)
-endif()
-
 add_library(imgui STATIC
     third_party/imgui/imgui.cpp
     third_party/imgui/imgui_draw.cpp
@@ -79,7 +68,7 @@ add_executable(Zenith
     src/main.cpp
     src/base/result.cpp
     ${CHILD_PROCESS_SOURCE}
-    ${CLIPBOARD_IMAGE_SOURCE}
+    src/platform/clipboard-image.cpp
     src/platform/file-dialogs.cpp
     src/platform/message-box.cpp
     src/providers/provider_runtime.cpp
