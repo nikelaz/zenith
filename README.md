@@ -2,7 +2,12 @@
 
 A cross-platform desktop application for orchestrating native LLM harnesses.
 
-Create multiple threads within each project and switch between them while turns are
-running. Turns in different threads run concurrently, including when they use the same
-provider. Each thread keeps its own draft, attachments, and provider/model selection;
-provider and model choices are restored when the application restarts.
+## License
+
+Zenith is source-available under the [PolyForm Shield License 1.0.0](https://polyformproject.org/licenses/shield/1.0.0).
+
+You are free to use, study, modify, and redistribute Zenith, subject to the license terms.
+
+The license does not permit using Zenith or derivatives of Zenith to provide a product that competes with Zenith.
+
+Copyright © 2026 Nikola Lazarov.
