@@ -38,6 +38,7 @@ struct ModelOption {
 struct UsageMetric {
     std::string name;
     std::string value;
+    std::string detail;
     std::string period;
     std::optional<double> used;
     std::optional<double> limit;

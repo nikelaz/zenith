@@ -2,6 +2,9 @@
 #include "../process/child-process.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
@@ -11,9 +14,15 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 using Json = nlohmann::json;
 
@@ -44,11 +53,20 @@ struct CopilotState {
     bool shutting_down = false;
     std::mutex startup_mutex;
     bool startup_complete = false;
+    std::condition_variable startup_ready;
     bool startup_applied = false;
     ProviderAvailability startup_availability = ProviderAvailability::Unknown;
     std::filesystem::path startup_location;
     std::string startup_default_model;
     std::vector<ModelOption> startup_models;
+    std::mutex usage_mutex;
+    std::condition_variable usage_ready;
+    bool usage_requested = false;
+    bool usage_updated = false;
+    bool usage_stopping = false;
+    UsageSnapshot usage_snapshot;
+    std::thread usage_worker;
+    ChildProcess* usage_process = nullptr;
 };
 
 struct StreamContext {
@@ -339,6 +357,298 @@ bool wait_for_response(ChildProcess* process, int request_id, StreamContext* con
     }
 }
 
+std::string copilot_quota_name(const std::string& key) {
+    if (key == "premium_interactions")
+        return "Premium interactions";
+    if (key == "chat")
+        return "Chat";
+    if (key == "completions")
+        return "Completions";
+
+    std::string name;
+    bool capitalize = true;
+    for (const char character : key) {
+        if (character == '_' || character == '-') {
+            name.push_back(' ');
+            capitalize = true;
+        } else {
+            name.push_back(capitalize
+                               ? static_cast<char>(std::toupper(
+                                     static_cast<unsigned char>(character)))
+                               : character);
+            capitalize = false;
+        }
+    }
+    return name;
+}
+
+std::string quota_number(double value) {
+    std::ostringstream formatted;
+    const double rounded = std::round(value);
+    if (std::isfinite(value) && std::abs(value - rounded) < 0.0001) {
+        formatted << static_cast<long long>(rounded);
+    } else {
+        formatted << std::fixed << std::setprecision(1) << value;
+    }
+    return formatted.str();
+}
+
+UsageSnapshot parse_copilot_usage(const Json& result) {
+    UsageSnapshot snapshot;
+    const Json quotas = result.value("quotaSnapshots", Json::object());
+    if (!quotas.is_object())
+        return snapshot;
+
+    std::vector<std::string> keys;
+    for (const char* key : {"premium_interactions", "chat", "completions"}) {
+        if (quotas.contains(key))
+            keys.emplace_back(key);
+    }
+    for (auto it = quotas.begin(); it != quotas.end(); ++it) {
+        if (std::find(keys.begin(), keys.end(), it.key()) == keys.end())
+            keys.push_back(it.key());
+    }
+
+    for (const std::string& key : keys) {
+        const Json& quota = quotas[key];
+        if (!quota.is_object())
+            continue;
+
+        const std::int64_t entitlement =
+            quota.contains("entitlementRequests") && quota["entitlementRequests"].is_number()
+                ? quota["entitlementRequests"].get<std::int64_t>()
+                : -1;
+        const double used = quota.contains("usedRequests") && quota["usedRequests"].is_number()
+                                ? quota["usedRequests"].get<double>()
+                                : 0.0;
+        const double overage = quota.contains("overage") && quota["overage"].is_number()
+                                   ? quota["overage"].get<double>()
+                                   : 0.0;
+        const bool unlimited = entitlement < 0 ||
+            (quota.contains("isUnlimitedEntitlement") &&
+             quota["isUnlimitedEntitlement"].is_boolean() &&
+             quota["isUnlimitedEntitlement"].get<bool>());
+
+        UsageMetric metric;
+        metric.name = copilot_quota_name(key);
+        if (unlimited) {
+            metric.value = "Unlimited allowance";
+            metric.detail = quota_number(used) + " requests used this period.";
+        } else if (entitlement > 0) {
+            double remaining_percentage =
+                quota.contains("remainingPercentage") && quota["remainingPercentage"].is_number()
+                    ? quota["remainingPercentage"].get<double>()
+                    : 100.0 * (static_cast<double>(entitlement) - used) /
+                          static_cast<double>(entitlement);
+            remaining_percentage = std::clamp(remaining_percentage, 0.0, 100.0);
+            metric.value = quota_number(remaining_percentage) + "% remaining";
+            metric.detail = "Used " + quota_number(used) + " of " +
+                            quota_number(static_cast<double>(entitlement)) +
+                            " included requests.";
+            metric.limit = static_cast<double>(entitlement);
+            metric.used = used;
+            metric.remaining = static_cast<double>(entitlement) * remaining_percentage / 100.0;
+        } else {
+            metric.value = "No included allowance";
+            metric.detail = quota_number(used) + " requests used this period.";
+        }
+
+        if (overage > 0.0)
+            metric.detail += " Additional usage: " + quota_number(overage) + " requests.";
+        if (!unlimited && quota.contains("usageAllowedWithExhaustedQuota") &&
+            quota["usageAllowedWithExhaustedQuota"].is_boolean()) {
+            metric.detail += quota["usageAllowedWithExhaustedQuota"].get<bool>()
+                                 ? " Usage can continue after the allowance is exhausted."
+                                 : " Usage stops when the allowance is exhausted.";
+        }
+        snapshot.metrics.push_back(std::move(metric));
+    }
+    return snapshot;
+}
+
+bool wait_for_server_response(ChildProcess* process, int request_id, Json* response,
+                              std::string* error) {
+    for (;;) {
+        Json message;
+        std::size_t content_length = 0;
+        bool has_length = false;
+        std::string header;
+        int character;
+        while ((character = fgetc(process->output)) != EOF) {
+            if (character != '\n') {
+                if (character != '\r')
+                    header.push_back(static_cast<char>(character));
+                if (header.size() > 1024) {
+                    *error = "Invalid GitHub Copilot server response header";
+                    return false;
+                }
+                continue;
+            }
+            if (header.empty())
+                break;
+            constexpr std::string_view prefix = "Content-Length: ";
+            if (header.compare(0, prefix.size(), prefix) == 0) {
+                try {
+                    content_length = std::stoull(header.substr(prefix.size()));
+                    has_length = true;
+                } catch (const std::exception&) {
+                    *error = "Invalid GitHub Copilot server response length";
+                    return false;
+                }
+            }
+            header.clear();
+        }
+        if (character == EOF || !has_length || content_length == 0 ||
+            content_length > 16 * 1024 * 1024) {
+            *error = "GitHub Copilot server closed its output or sent an invalid response";
+            return false;
+        }
+        std::string body(content_length, '\0');
+        if (fread(body.data(), 1, content_length, process->output) != content_length) {
+            *error = "GitHub Copilot server closed its output";
+            return false;
+        }
+        try {
+            message = Json::parse(body);
+        } catch (const Json::parse_error&) {
+            *error = "Invalid GitHub Copilot server response";
+            return false;
+        }
+        if (!message.is_object() || message.contains("method") ||
+            !message.contains("id") || !message["id"].is_number_integer() ||
+            message["id"].get<int>() != request_id)
+            continue;
+
+        if (response != nullptr)
+            *response = message;
+        if (message.contains("error")) {
+            const Json& rpc_error = message["error"];
+            *error = string_value(rpc_error, "message");
+            if (error->empty() && rpc_error.is_string())
+                *error = rpc_error.get<std::string>();
+            if (error->empty())
+                *error = "GitHub Copilot server request failed";
+            return false;
+        }
+        return true;
+    }
+}
+
+bool fetch_copilot_usage(CopilotState* state, UsageSnapshot* snapshot,
+                         std::string* error) {
+    child_process_ignore_sigpipe();
+
+    std::filesystem::path executable;
+    {
+        std::unique_lock lock(state->startup_mutex);
+        state->startup_ready.wait(lock, [state] { return state->startup_complete; });
+        executable = state->startup_location;
+    }
+    if (executable.empty()) {
+        *error = "GitHub Copilot CLI executable was not found";
+        return false;
+    }
+
+    ChildProcess process;
+    const std::vector<std::string> arguments = {"--server", "--stdio", "--no-auto-update"};
+    Result started = child_process_start(&process, executable, arguments,
+                                         "GitHub Copilot usage server");
+    if (started.status == ResultStatus::Error) {
+        *error = started.error;
+        child_process_stop(&process);
+        return false;
+    }
+#ifdef _WIN32
+    _setmode(_fileno(process.input), _O_BINARY);
+    _setmode(_fileno(process.output), _O_BINARY);
+#endif
+    {
+        std::lock_guard lock(state->active_mutex);
+        state->usage_process = &process;
+        if (state->shutting_down)
+            child_process_terminate(&process);
+    }
+
+    const Json connect = {{"jsonrpc", "2.0"}, {"id", 1}, {"method", "connect"},
+                          {"params", Json::object()}};
+    const Json quota_request = {{"jsonrpc", "2.0"}, {"id", 2},
+                                {"method", "account.getQuota"},
+                                {"params", Json::object()}};
+    Json response;
+    const auto write_server_message = [&process](const Json& message) {
+        const std::string body = message.dump();
+        const std::string header = "Content-Length: " + std::to_string(body.size()) +
+                                   "\r\n\r\n";
+        return fwrite(header.data(), 1, header.size(), process.input) == header.size() &&
+               fwrite(body.data(), 1, body.size(), process.input) == body.size() &&
+               fflush(process.input) == 0;
+    };
+    const bool success = write_server_message(connect) &&
+        wait_for_server_response(&process, 1, nullptr, error) &&
+        write_server_message(quota_request) &&
+        wait_for_server_response(&process, 2, &response, error);
+    if (!success && error->empty())
+        *error = "Could not send GitHub Copilot quota request";
+    if (success)
+        *snapshot = parse_copilot_usage(response.value("result", Json::object()));
+
+    {
+        std::lock_guard lock(state->active_mutex);
+        if (state->usage_process == &process)
+            state->usage_process = nullptr;
+    }
+    child_process_stop(&process);
+    return success;
+}
+
+void run_copilot_usage(void* context) {
+    CopilotState* state = static_cast<CopilotState*>(context);
+    for (;;) {
+        {
+            std::unique_lock lock(state->usage_mutex);
+            state->usage_ready.wait(lock, [state] {
+                return state->usage_stopping || state->usage_requested;
+            });
+            if (state->usage_stopping)
+                return;
+            state->usage_requested = false;
+        }
+
+        UsageSnapshot snapshot;
+        std::string error;
+        if (!fetch_copilot_usage(state, &snapshot, &error)) {
+            UsageMetric metric;
+            metric.name = "Usage unavailable";
+            metric.value = error.empty() ? "Could not read GitHub Copilot quota." : error;
+            snapshot.metrics.push_back(std::move(metric));
+        }
+        snapshot.updated_at = utc_timestamp();
+        std::lock_guard lock(state->usage_mutex);
+        state->usage_snapshot = std::move(snapshot);
+        state->usage_updated = true;
+    }
+}
+
+void request_copilot_usage(Provider* provider) {
+    CopilotState* state = static_cast<CopilotState*>(provider->state);
+    {
+        std::lock_guard lock(state->usage_mutex);
+        if (state->usage_stopping)
+            return;
+        state->usage_requested = true;
+    }
+    state->usage_ready.notify_one();
+}
+
+std::optional<UsageSnapshot> poll_copilot_usage(Provider* provider) {
+    CopilotState* state = static_cast<CopilotState*>(provider->state);
+    std::lock_guard lock(state->usage_mutex);
+    if (!state->usage_updated)
+        return std::nullopt;
+    state->usage_updated = false;
+    return state->usage_snapshot;
+}
+
 bool initialize_copilot(ChildProcess* process, StreamContext* context, Json* response,
                         std::string* error) {
     const Json initialize = {
@@ -491,12 +801,15 @@ void initialize_github_copilot(void* context, ProviderRuntime*) {
                                 &default_model);
     }
 
-    std::lock_guard lock(state->startup_mutex);
-    state->startup_availability = availability;
-    state->startup_location = std::move(location);
-    state->startup_default_model = std::move(default_model);
-    state->startup_models = std::move(models);
-    state->startup_complete = true;
+    {
+        std::lock_guard lock(state->startup_mutex);
+        state->startup_availability = availability;
+        state->startup_location = std::move(location);
+        state->startup_default_model = std::move(default_model);
+        state->startup_models = std::move(models);
+        state->startup_complete = true;
+    }
+    state->startup_ready.notify_all();
 }
 
 std::string conversation_prompt(const TurnRequest* request) {
@@ -748,7 +1061,15 @@ Result start_github_copilot(Provider* provider) {
         provider_runtime_set_initialize(&state->runtime, initialize_github_copilot);
     else
         provider->availability = ProviderAvailability::Available;
-    return provider_runtime_start(&state->runtime);
+    Result result = provider_runtime_start(&state->runtime);
+    if (result.status == ResultStatus::Error)
+        return result;
+    if (state->options.execute == nullptr) {
+        state->usage_worker = std::thread(run_copilot_usage, state);
+        provider->request_usage = request_copilot_usage;
+        provider->poll_usage = poll_copilot_usage;
+    }
+    return result_ok();
 }
 
 Result submit_github_copilot(Provider* provider, TurnRequest request) {
@@ -792,7 +1113,7 @@ std::vector<Event> poll_github_copilot(Provider* provider) {
         std::lock_guard lock(state->startup_mutex);
         if (state->startup_complete && !state->startup_applied) {
             provider->availability = state->startup_availability;
-            provider->location = std::move(state->startup_location);
+            provider->location = state->startup_location;
             provider->default_model = std::move(state->startup_default_model);
             if (!state->startup_models.empty())
                 provider->models = std::move(state->startup_models);
@@ -812,7 +1133,16 @@ void destroy_github_copilot(Provider* provider) {
                 child_process_terminate(active.process);
         if (state->startup_process != nullptr && child_process_running(state->startup_process))
             child_process_terminate(state->startup_process);
+        if (state->usage_process != nullptr && child_process_running(state->usage_process))
+            child_process_terminate(state->usage_process);
     }
+    {
+        std::lock_guard lock(state->usage_mutex);
+        state->usage_stopping = true;
+    }
+    state->usage_ready.notify_all();
+    if (state->usage_worker.joinable())
+        state->usage_worker.join();
     provider_runtime_shutdown(&state->runtime);
     delete state;
     delete provider;

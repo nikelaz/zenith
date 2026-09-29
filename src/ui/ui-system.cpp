@@ -836,13 +836,20 @@ void UISystem::render_frame_to_backbuffer() {
                         *metric.limit - metric.used.value_or(0.0));
                     const double fraction = *metric.limit > 0.0
                         ? std::clamp(remaining / *metric.limit, 0.0, 1.0) : 0.0;
+                    const std::string progress_label = metric.value.empty()
+                        ? std::to_string(static_cast<int>(fraction * 100.0 + 0.5)) +
+                              "% remaining"
+                        : metric.value;
                     ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.16f, 0.16f, 0.16f, 1.0f));
                     ImGui::PushStyleColor(ImGuiCol_PlotHistogram,
                                           ImVec4(0.48f, 0.48f, 0.48f, 1.0f));
                     ImGui::ProgressBar(static_cast<float>(fraction),
-                                       ImVec2(-FLT_MIN, ui_size(4.0f)), "");
+                                       ImVec2(-FLT_MIN, ui_size(4.0f)),
+                                       progress_label.c_str());
                     ImGui::PopStyleColor(2);
                 }
+                if (!metric.detail.empty())
+                    ImGui::TextWrapped("%s", metric.detail.c_str());
                 if (!metric.period.empty())
                     ImGui::TextDisabled("Period: %s", metric.period.c_str());
                 if (!metric.reset_at.empty())
