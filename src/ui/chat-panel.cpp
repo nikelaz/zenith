@@ -1392,14 +1392,22 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             panel_state.file_picker_open = false;
         ChatThread& thread = threads[state.selected_thread];
         const float outer_padding = ui_size(8.0f);
-        const float input_height = std::max(ui_size(58.0f),
-            ImGui::GetTextLineHeight() * 2.0f + ImGui::GetStyle().FramePadding.y * 2.0f);
         const float footer_height = std::max(ui_size(38.0f),
             ImGui::GetFrameHeight() + ui_size(6.0f));
         const float max_chat_width = ui_size(960.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
         const float available_width = ImGui::GetContentRegionAvail().x;
         const float chat_width = std::min(available_width, max_chat_width);
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float minimum_input_height = std::max(ui_size(58.0f),
+            ImGui::GetTextLineHeight() * 2.0f + style.FramePadding.y * 2.0f);
+        const float input_wrap_width = std::max(1.0f,
+            chat_width - outer_padding * 2.0f - style.FramePadding.x * 2.0f -
+                style.ScrollbarSize);
+        const float input_text_height = ImGui::CalcTextSize(
+            message_input.c_str(), nullptr, false, input_wrap_width).y;
+        const float input_height = std::max(minimum_input_height,
+            input_text_height + style.FramePadding.y * 2.0f);
         const float tag_area_width = std::max(1.0f, chat_width - outer_padding * 2.0f);
         std::size_t attachment_rows = 0;
         float attachment_row_width = 0.0f;
@@ -1586,7 +1594,8 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         bool enter = ImGui::InputTextMultiline(
             "##message-input", &message_input,
             ImVec2(full_width - outer_padding * 2.0f, input_height),
-            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine);
+            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine |
+                ImGuiInputTextFlags_WordWrap);
         platform.Platform_GetClipboardTextFn = clipboard.get_text;
         platform.Platform_ClipboardUserData = clipboard.user_data;
         const bool input_active = ImGui::IsItemActive();
