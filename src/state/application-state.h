@@ -56,6 +56,7 @@ struct ChatThread {
     std::string model;
     std::string reasoning_effort;
     std::string permission_mode;
+    bool title_generation_attempted = false;
 };
 
 struct ChatProject {
@@ -68,21 +69,17 @@ struct ApplicationState {
     int base_font_size = 16;
     float ui_scale = 1.0f;
     bool collapse_tool_calls = true;
+    std::string thread_metadata_provider;
+    std::string thread_metadata_model;
     std::vector<ChatProject> projects = {
         {
             {},
             true,
             {
                 {
-                    "Project setup",
-                    "Getting the application structure and core systems in place.",
+                    "",
+                    "",
                     "project-setup",
-                    {}
-                },
-                {
-                    "UI layout",
-                    "Planning the workspace panels and how they fit together.",
-                    "ui-layout",
                     {}
                 },
             },

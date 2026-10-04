@@ -19,6 +19,11 @@ struct ImFont;
 
 class UISystem {
 private:
+    struct PendingThreadMetadata {
+        std::string thread_id;
+        std::string response;
+    };
+
     bool m_initialized = false;
     bool m_open_settings_requested = false;
     bool m_threads_panel_open = true;
@@ -43,6 +48,7 @@ private:
     std::vector<ProviderPtr>& m_providers;
     ChatPanelState m_chat_panel_state;
     std::unordered_map<std::string, ChatPanelState> m_thread_panels;
+    std::unordered_map<TurnId, PendingThreadMetadata> m_pending_thread_metadata;
     TurnId m_next_turn_id = 1;
     std::shared_ptr<FileDialogQueue> m_file_dialog_queue =
         std::make_shared<FileDialogQueue>();

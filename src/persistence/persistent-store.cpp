@@ -291,6 +291,13 @@ Result PersistentStore::open(const std::string& path) {
                 return migration;
         }
     }
+    if (!has_column(m_database, "threads", "title_generation_attempted")) {
+        Result migration = execute(
+            "ALTER TABLE threads ADD COLUMN title_generation_attempted INTEGER NOT NULL DEFAULT 0",
+            "Failed to add thread title generation state");
+        if (migration.status == ResultStatus::Error)
+            return migration;
+    }
     return result_ok();
 }
 
@@ -329,6 +336,24 @@ Result PersistentStore::load(ApplicationState& state) {
     } else if (appearance_result != SQLITE_DONE) {
         return fail("Failed to load tool call display setting");
     }
+    sqlite3_reset(appearance_statement.get());
+    sqlite3_clear_bindings(appearance_statement.get());
+    sqlite3_bind_text(appearance_statement.get(), 1, "thread_metadata_provider", -1,
+                      SQLITE_STATIC);
+    appearance_result = sqlite3_step(appearance_statement.get());
+    if (appearance_result == SQLITE_ROW)
+        state.thread_metadata_provider = column_text(appearance_statement.get(), 0);
+    else if (appearance_result != SQLITE_DONE)
+        return fail("Failed to load thread metadata provider");
+    sqlite3_reset(appearance_statement.get());
+    sqlite3_clear_bindings(appearance_statement.get());
+    sqlite3_bind_text(appearance_statement.get(), 1, "thread_metadata_model", -1,
+                      SQLITE_STATIC);
+    appearance_result = sqlite3_step(appearance_statement.get());
+    if (appearance_result == SQLITE_ROW)
+        state.thread_metadata_model = column_text(appearance_statement.get(), 0);
+    else if (appearance_result != SQLITE_DONE)
+        return fail("Failed to load thread metadata model");
 
     Statement count_statement;
     if (!prepare(m_database, "SELECT COUNT(*) FROM threads", count_statement)) {
@@ -393,7 +418,7 @@ Result PersistentStore::load(ApplicationState& state) {
     if (!prepare(m_database, "SELECT position, directory, expanded FROM projects ORDER BY position",
                  project_statement) ||
         !prepare(m_database,
-                 "SELECT position, title, description, thread_id, project_position, provider, model, reasoning_effort, permission_mode FROM threads ORDER BY position",
+                 "SELECT position, title, description, thread_id, project_position, provider, model, reasoning_effort, permission_mode, title_generation_attempted FROM threads ORDER BY position",
                  thread_statement) ||
         !prepare(m_database,
                  "SELECT role, content, reasoning, segments, attachments FROM messages WHERE thread_position = ? ORDER BY position",
@@ -432,6 +457,8 @@ Result PersistentStore::load(ApplicationState& state) {
         thread.model = column_text(thread_statement.get(), 6);
         thread.reasoning_effort = column_text(thread_statement.get(), 7);
         thread.permission_mode = column_text(thread_statement.get(), 8);
+        thread.title_generation_attempted =
+            sqlite3_column_int(thread_statement.get(), 9) != 0;
 
         if (sqlite3_bind_int(message_statement.get(), 1, position) != SQLITE_OK) {
             return fail("Failed to load saved messages");
@@ -460,6 +487,17 @@ Result PersistentStore::load(ApplicationState& state) {
 
         sqlite3_reset(message_statement.get());
         sqlite3_clear_bindings(message_statement.get());
+        if (!thread.messages.empty())
+            thread.title_generation_attempted = true;
+        if (thread.id == "ui-layout" && thread.messages.empty())
+            continue;
+        if (thread.messages.empty() &&
+            (thread.id == "project-setup" ||
+             (thread.title.rfind("New thread ", 0) == 0 &&
+              thread.description == "A new conversation."))) {
+            thread.title.clear();
+            thread.description.clear();
+        }
         state.projects[static_cast<std::size_t>(project_position)].threads.push_back(std::move(thread));
     }
     if (thread_result != SQLITE_DONE) {
@@ -531,7 +569,7 @@ Result PersistentStore::save(const ApplicationState& state) {
                  "INSERT INTO projects(position, directory, expanded) VALUES(?, ?, ?)",
                  project_statement) ||
         !prepare(m_database,
-                 "INSERT INTO threads(position, title, description, thread_id, project_position, provider, model, reasoning_effort, permission_mode) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 "INSERT INTO threads(position, title, description, thread_id, project_position, provider, model, reasoning_effort, permission_mode, title_generation_attempted) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                  thread_statement) ||
         !prepare(m_database,
                  "INSERT INTO messages(thread_position, position, role, content, reasoning, segments, attachments) VALUES(?, ?, ?, ?, ?, ?, ?)",
@@ -573,6 +611,8 @@ Result PersistentStore::save(const ApplicationState& state) {
             sqlite3_bind_text(thread_statement.get(), 7, thread.model.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(thread_statement.get(), 8, thread.reasoning_effort.c_str(), -1, SQLITE_TRANSIENT);
             sqlite3_bind_text(thread_statement.get(), 9, thread.permission_mode.c_str(), -1, SQLITE_TRANSIENT);
+            sqlite3_bind_int(thread_statement.get(), 10,
+                             thread.title_generation_attempted ? 1 : 0);
             if (sqlite3_step(thread_statement.get()) != SQLITE_DONE)
                 return rollback(fail("Failed to save thread"));
             sqlite3_reset(thread_statement.get());
@@ -629,6 +669,22 @@ Result PersistentStore::save(const ApplicationState& state) {
     sqlite3_bind_int(appearance_statement.get(), 2, state.collapse_tool_calls ? 1 : 0);
     if (sqlite3_step(appearance_statement.get()) != SQLITE_DONE)
         return rollback(fail("Failed to save tool call display setting"));
+    sqlite3_reset(appearance_statement.get());
+    sqlite3_clear_bindings(appearance_statement.get());
+    sqlite3_bind_text(appearance_statement.get(), 1, "thread_metadata_provider", -1,
+                      SQLITE_STATIC);
+    sqlite3_bind_text(appearance_statement.get(), 2, state.thread_metadata_provider.c_str(),
+                      -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(appearance_statement.get()) != SQLITE_DONE)
+        return rollback(fail("Failed to save thread metadata provider"));
+    sqlite3_reset(appearance_statement.get());
+    sqlite3_clear_bindings(appearance_statement.get());
+    sqlite3_bind_text(appearance_statement.get(), 1, "thread_metadata_model", -1,
+                      SQLITE_STATIC);
+    sqlite3_bind_text(appearance_statement.get(), 2, state.thread_metadata_model.c_str(),
+                      -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(appearance_statement.get()) != SQLITE_DONE)
+        return rollback(fail("Failed to save thread metadata model"));
     result = execute(
         "INSERT INTO settings(name, value) VALUES('projects_initialized', 1) "
         "ON CONFLICT(name) DO UPDATE SET value = excluded.value",

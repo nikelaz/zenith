@@ -39,6 +39,14 @@ std::string project_name(const std::filesystem::path& directory) {
     return name.empty() ? directory.root_path().string() : name;
 }
 
+std::string thread_title(const ChatProject& project, std::size_t thread_index) {
+    const ChatThread& thread = project.threads[thread_index];
+    if (!thread.title.empty())
+        return thread.title;
+    return thread_index == 0 ? "New Thread"
+        : "New Thread #" + std::to_string(thread_index + 1);
+}
+
 std::filesystem::path normalized_directory(const std::filesystem::path& directory,
                                             std::error_code& error) {
     std::filesystem::path normalized = std::filesystem::weakly_canonical(directory, error);
@@ -119,8 +127,8 @@ void open_project(ApplicationState& state,
 void add_thread(ApplicationState& state, std::size_t project_index) {
     ChatProject& project = state.projects[project_index];
     project.threads.insert(project.threads.begin(), {
-        "New thread " + std::to_string(project.threads.size() + 1),
-        "A new conversation.",
+        "",
+        "",
         next_thread_id(state),
         {},
     });
@@ -210,7 +218,7 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
                                               : ImVec4(0.48f, 0.48f, 0.48f, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_Text, title_color);
     ImGui::SetCursorScreenPos(ImVec2(text_x, title_y));
-    ImGui::TextUnformatted(thread.title.c_str());
+    ImGui::TextUnformatted(thread_title(project, thread_index).c_str());
     if (!thread.description.empty()) {
         ImGui::SetCursorScreenPos(
             ImVec2(text_x, title_y + ImGui::GetTextLineHeight() + description_spacing));
@@ -468,7 +476,8 @@ void render_threads_panel(ApplicationState& state,
             const std::size_t project_index = pending_delete->project_index;
             const std::size_t thread_index = pending_delete->thread_index;
             ChatProject& project = state.projects[project_index];
-            ImGui::Text("Delete thread \"%s\"?", project.threads[thread_index].title.c_str());
+            ImGui::Text("Delete thread \"%s\"?",
+                        thread_title(project, thread_index).c_str());
             ImGui::TextUnformatted("This cannot be undone.");
             ImGui::Spacing();
 
