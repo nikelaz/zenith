@@ -307,10 +307,6 @@ UISystem::UISystem(SDL_Window* window, SDL_GPUDevice* gpu_device,
     m_chat_panel_state.selected_model = providers.empty()
         ? std::string{} : providers.front()->default_model;
     for (std::size_t index = 0; index < providers.size(); ++index) {
-        if (providers[index]->request_usage != nullptr && providers[index]->poll_usage != nullptr) {
-            providers[index]->request_usage(providers[index].get());
-            m_usage_loading[index] = true;
-        }
         if (providers[index]->name == "GitHub Copilot") {
             m_chat_panel_state.selected_provider = index;
             m_chat_panel_state.selected_model = providers[index]->default_model;
@@ -371,6 +367,13 @@ Result UISystem::init() {
     }
     SDL_SetWindowHitTest(m_window, title_bar_hit_test, this);
     m_initialized = true;
+    for (std::size_t index = 0; index < m_providers.size(); ++index) {
+        Provider* provider = m_providers[index].get();
+        if (provider->request_usage != nullptr && provider->poll_usage != nullptr) {
+            provider->request_usage(provider);
+            m_usage_loading[index] = true;
+        }
+    }
     return result_ok();
 }
 
@@ -797,7 +800,137 @@ void UISystem::render_frame_to_backbuffer() {
     }
     if (m_usage_panel_open) {
         ImGui::Begin("Usage & Limits");
-        if (ImGui::Button("Refresh")) {
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        const ImVec2 window_position = ImGui::GetWindowPos();
+        const float panel_width = ImGui::GetWindowWidth();
+        const ImGuiStyle& style = ImGui::GetStyle();
+        const float text_size = style.FontSizeBase * style.FontScaleMain;
+        const float panel_scale = text_size / 16.0f;
+        const auto panel_size = [panel_scale](float size) { return size * panel_scale; };
+        ImFont* font = ImGui::GetFont();
+        const float line_height = font->CalcTextSizeA(text_size, FLT_MAX, 0.0f, "Mg").y;
+        const ImU32 label_color = IM_COL32(153, 153, 153, 255);
+        const ImU32 value_color = IM_COL32(225, 225, 225, 255);
+        const ImU32 reset_color = IM_COL32(120, 120, 120, 255);
+        draw_list->PushClipRect(window_position,
+            ImVec2(window_position.x + ImGui::GetWindowWidth(),
+                   window_position.y + ImGui::GetWindowHeight()), true);
+        auto draw_text = [draw_list, font, text_size](const char* text, ImVec2 position,
+                                                     ImU32 color) {
+            draw_list->AddText(font, text_size, position, color, text);
+        };
+        float y = ImGui::GetCursorScreenPos().y - ImGui::GetStyle().WindowPadding.y;
+        for (std::size_t index = 0; index < m_providers.size(); ++index) {
+            Provider* provider = m_providers[index].get();
+            const bool usage_supported = provider->request_usage != nullptr &&
+                                         provider->poll_usage != nullptr;
+            const bool usage_unavailable = m_usage_snapshots[index].has_value() &&
+                std::any_of(m_usage_snapshots[index]->metrics.begin(),
+                            m_usage_snapshots[index]->metrics.end(),
+                    [](const UsageMetric& metric) { return metric.name == "Usage unavailable"; });
+            if (!usage_supported || usage_unavailable)
+                continue;
+            draw_list->AddRectFilled(ImVec2(window_position.x, y),
+                                     ImVec2(window_position.x + panel_width, y + panel_size(26.0f)),
+                                     IM_COL32(29, 29, 29, 255));
+            const std::string provider_name = provider->name == "codex"
+                ? "Codex" : std::string(provider->name);
+            draw_text(provider_name.c_str(), ImVec2(window_position.x + panel_size(10.0f),
+                                             y + (panel_size(26.0f) - line_height) * 0.5f),
+                      IM_COL32(170, 170, 170, 255));
+            y += panel_size(26.0f);
+            if (m_usage_loading[index] && !m_usage_snapshots[index].has_value()) {
+                draw_text("Loading usage information…",
+                          ImVec2(window_position.x + panel_size(10.0f), y + panel_size(10.0f)),
+                          label_color);
+                y += panel_size(34.0f);
+                ImGui::SetCursorScreenPos(ImVec2(window_position.x, y));
+                continue;
+            }
+            if (!m_usage_snapshots[index].has_value() ||
+                m_usage_snapshots[index]->metrics.empty()) {
+                draw_text("No usage limits were reported.",
+                          ImVec2(window_position.x + panel_size(10.0f), y + panel_size(10.0f)),
+                          label_color);
+                y += panel_size(34.0f);
+                ImGui::SetCursorScreenPos(ImVec2(window_position.x, y));
+                continue;
+            }
+            const UsageSnapshot& snapshot = *m_usage_snapshots[index];
+            for (const UsageMetric& metric : snapshot.metrics) {
+                if (metric.name == "Plan" || metric.name == "Credits")
+                    continue;
+                const bool has_quota = metric.limit.has_value() &&
+                    (metric.remaining.has_value() || metric.used.has_value());
+                std::string label = metric.name;
+                if (!metric.period.empty()) {
+                    if (metric.period == "7 days")
+                        label = "Weekly Limit";
+                    else if (metric.period == "5 hours")
+                        label = "5-Hour Limit";
+                    else
+                        label = metric.period + " Limit";
+                }
+                std::string value = metric.value;
+                y += panel_size(14.0f);
+                if (has_quota) {
+                    const double used = metric.used.value_or(
+                        *metric.limit - metric.remaining.value_or(0.0));
+                    const double fraction = *metric.limit > 0.0
+                        ? std::clamp(used / *metric.limit, 0.0, 1.0) : 0.0;
+                    if (!metric.period.empty()) {
+                        value = std::to_string(static_cast<int>(used + 0.5)) + "% Used";
+                    }
+                    draw_text(label.c_str(), ImVec2(window_position.x + panel_size(10.0f), y),
+                              label_color);
+                    const ImVec2 value_size = font->CalcTextSizeA(
+                        text_size, FLT_MAX, 0.0f, value.c_str());
+                    draw_text(value.c_str(), ImVec2(window_position.x + panel_width -
+                        panel_size(10.0f) - value_size.x, y), value_color);
+                    y += line_height + panel_size(7.0f);
+                    const ImVec2 bar_min(window_position.x + panel_size(10.0f), y);
+                    const ImVec2 bar_max(window_position.x + panel_width - panel_size(10.0f),
+                                         y + panel_size(16.0f));
+                    const float radius = panel_size(6.0f);
+                    draw_list->AddRectFilled(bar_min, bar_max, IM_COL32(29, 29, 29, 255),
+                                              radius);
+                    draw_list->AddRectFilled(bar_min,
+                        ImVec2(bar_min.x + (bar_max.x - bar_min.x) *
+                            static_cast<float>(fraction), bar_max.y),
+                        IM_COL32(94, 94, 94, 255), radius);
+                    y += panel_size(24.0f);
+                } else if (!value.empty()) {
+                    draw_text(label.c_str(), ImVec2(window_position.x + panel_size(10.0f), y),
+                              label_color);
+                    y += line_height + panel_size(3.0f);
+                    ImGui::SetCursorScreenPos(ImVec2(
+                        window_position.x + panel_size(10.0f), y));
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(value_color));
+                    ImGui::TextWrapped("%s", value.c_str());
+                    ImGui::PopStyleColor();
+                    y = ImGui::GetCursorScreenPos().y + panel_size(8.0f);
+                } else {
+                    draw_text(label.c_str(), ImVec2(window_position.x + panel_size(10.0f), y),
+                              label_color);
+                    y += line_height + panel_size(8.0f);
+                }
+                if (!metric.reset_at.empty()) {
+                    const std::string reset = "Resets: " + metric.reset_at;
+                    draw_text(reset.c_str(), ImVec2(window_position.x + panel_size(10.0f), y),
+                              reset_color);
+                    y += line_height + panel_size(3.0f);
+                }
+            }
+            y += panel_size(4.0f);
+            ImGui::SetCursorScreenPos(ImVec2(window_position.x, y));
+        }
+        draw_list->PopClipRect();
+        ImGui::SetCursorScreenPos(ImVec2(window_position.x + ImGui::GetStyle().WindowPadding.x,
+                                         y));
+        const bool refreshing = std::find(m_usage_loading.begin(), m_usage_loading.end(), true) !=
+                                m_usage_loading.end();
+        ImGui::BeginDisabled(refreshing);
+        if (ImGui::Button(refreshing ? "Refreshing..." : "Refresh")) {
             for (std::size_t index = 0; index < m_providers.size(); ++index) {
                 Provider* provider = m_providers[index].get();
                 if (provider->request_usage != nullptr && provider->poll_usage != nullptr) {
@@ -806,58 +939,7 @@ void UISystem::render_frame_to_backbuffer() {
                 }
             }
         }
-        for (std::size_t index = 0; index < m_providers.size(); ++index) {
-            Provider* provider = m_providers[index].get();
-            ImGui::SeparatorText(std::string(provider->name).c_str());
-            if (provider->request_usage == nullptr || provider->poll_usage == nullptr) {
-                ImGui::TextDisabled("Usage information is not available for this provider.");
-                continue;
-            }
-            if (m_usage_loading[index] && !m_usage_snapshots[index].has_value()) {
-                ImGui::TextDisabled("Loading usage information…");
-                continue;
-            }
-            if (!m_usage_snapshots[index].has_value() ||
-                m_usage_snapshots[index]->metrics.empty()) {
-                ImGui::TextDisabled("No usage limits were reported.");
-                continue;
-            }
-            const UsageSnapshot& snapshot = *m_usage_snapshots[index];
-            if (m_usage_loading[index])
-                ImGui::TextDisabled("Refreshing…");
-            for (const UsageMetric& metric : snapshot.metrics) {
-                ImGui::SeparatorText(metric.name.c_str());
-                const bool has_quota = metric.limit.has_value() &&
-                    (metric.remaining.has_value() || metric.used.has_value());
-                if (!metric.value.empty() && !has_quota)
-                    ImGui::TextWrapped("%s", metric.value.c_str());
-                if (has_quota) {
-                    const double remaining = metric.remaining.value_or(
-                        *metric.limit - metric.used.value_or(0.0));
-                    const double fraction = *metric.limit > 0.0
-                        ? std::clamp(remaining / *metric.limit, 0.0, 1.0) : 0.0;
-                    const std::string progress_label = metric.value.empty()
-                        ? std::to_string(static_cast<int>(fraction * 100.0 + 0.5)) +
-                              "% remaining"
-                        : metric.value;
-                    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.16f, 0.16f, 0.16f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_PlotHistogram,
-                                          ImVec4(0.48f, 0.48f, 0.48f, 1.0f));
-                    ImGui::ProgressBar(static_cast<float>(fraction),
-                                       ImVec2(-FLT_MIN, ui_size(4.0f)),
-                                       progress_label.c_str());
-                    ImGui::PopStyleColor(2);
-                }
-                if (!metric.detail.empty())
-                    ImGui::TextWrapped("%s", metric.detail.c_str());
-                if (!metric.period.empty())
-                    ImGui::TextDisabled("Period: %s", metric.period.c_str());
-                if (!metric.reset_at.empty())
-                    ImGui::TextDisabled("Resets: %s", metric.reset_at.c_str());
-            }
-            if (!snapshot.updated_at.empty())
-                ImGui::TextDisabled("Updated: %s", snapshot.updated_at.c_str());
-        }
+        ImGui::EndDisabled();
         ImGui::End();
     }
 

@@ -359,7 +359,7 @@ bool wait_for_response(ChildProcess* process, int request_id, StreamContext* con
 
 std::string copilot_quota_name(const std::string& key) {
     if (key == "premium_interactions")
-        return "Premium interactions";
+        return "Monthly Credits";
     if (key == "chat")
         return "Chat";
     if (key == "completions")
@@ -441,7 +441,8 @@ UsageSnapshot parse_copilot_usage(const Json& result) {
                     : 100.0 * (static_cast<double>(entitlement) - used) /
                           static_cast<double>(entitlement);
             remaining_percentage = std::clamp(remaining_percentage, 0.0, 100.0);
-            metric.value = quota_number(remaining_percentage) + "% remaining";
+            metric.value = quota_number(used) + "/" +
+                           quota_number(static_cast<double>(entitlement)) + " Used";
             metric.detail = "Used " + quota_number(used) + " of " +
                             quota_number(static_cast<double>(entitlement)) +
                             " included requests.";
