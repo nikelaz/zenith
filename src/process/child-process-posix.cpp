@@ -61,7 +61,8 @@ Result child_process_start(
     ChildProcess* process, const std::filesystem::path& executable,
     const std::vector<std::string>& arguments, const char* process_name,
     const std::vector<ChildProcessEnvironmentVariable>& environment,
-    const std::filesystem::path& error_output_path) {
+    const std::filesystem::path& error_output_path,
+    const std::filesystem::path& working_directory) {
     *process = ChildProcess{};
 
     std::vector<std::string> argument_strings;
@@ -118,6 +119,8 @@ Result child_process_start(
             close(error_output);
         for (const ChildProcessEnvironmentVariable& variable : environment)
             setenv(variable.name.c_str(), variable.value.c_str(), 1);
+        if (!working_directory.empty() && chdir(working_directory.c_str()) != 0)
+            _exit(127);
         execvp(argument_values[0], argument_values.data());
         _exit(127);
     }

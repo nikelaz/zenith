@@ -42,6 +42,45 @@ std::string trim_string(std::string value) {
     return value.substr(start, end - start + 1);
 }
 
+std::string path_utf8(const std::filesystem::path& path) {
+    const std::u8string utf8_path = path.generic_u8string();
+    return std::string(reinterpret_cast<const char*>(utf8_path.data()), utf8_path.size());
+}
+
+std::string skill_directory_key(const std::filesystem::path& path) {
+    return path_utf8(path.lexically_normal());
+}
+
+std::string skill_file_url(const std::filesystem::path& path) {
+    std::error_code error;
+    const std::filesystem::path absolute = std::filesystem::absolute(path, error);
+    if (error)
+        return {};
+    const std::u8string utf8_path = absolute.generic_u8string();
+    const std::string path_text(reinterpret_cast<const char*>(utf8_path.data()),
+                                utf8_path.size());
+    std::string url = "file://";
+    if (path_text.empty() || path_text.front() != '/')
+        url.push_back('/');
+    static constexpr char hex[] = "0123456789ABCDEF";
+    for (const unsigned char character : path_text) {
+        const bool unreserved =
+            (character >= 'a' && character <= 'z') ||
+            (character >= 'A' && character <= 'Z') ||
+            (character >= '0' && character <= '9') || character == '-' ||
+            character == '_' || character == '.' || character == '~' ||
+            character == '/' || character == ':';
+        if (unreserved) {
+            url.push_back(static_cast<char>(character));
+        } else {
+            url.push_back('%');
+            url.push_back(hex[character >> 4]);
+            url.push_back(hex[character & 0x0f]);
+        }
+    }
+    return url;
+}
+
 bool parse_thread_metadata(const std::string& response, std::string* title,
                            std::string* description) {
     try {
@@ -383,7 +422,8 @@ UISystem::UISystem(SDL_Window* window, SDL_GPUDevice* gpu_device,
                    ApplicationState& state, std::vector<ProviderPtr>& providers)
     : m_window(window), m_gpu_device(gpu_device), m_state(state), m_providers(providers),
       m_chat_panel_state(), m_usage_snapshots(providers.size()),
-      m_usage_loading(providers.size(), false) {
+      m_usage_loading(providers.size(), false), m_skill_snapshots(providers.size()),
+      m_skill_requests(providers.size()) {
     m_chat_panel_state.selected_model = providers.empty()
         ? std::string{} : providers.front()->default_model;
     for (std::size_t index = 0; index < providers.size(); ++index) {
@@ -875,6 +915,51 @@ void UISystem::render_frame_to_backbuffer() {
             panel.monospace_font = m_chat_panel_state.monospace_font;
             panel.attachment_icon_texture = m_chat_panel_state.attachment_icon_texture;
             panel.paperclip_icon_texture = m_chat_panel_state.paperclip_icon_texture;
+            panel.slash_commands.clear();
+            panel.slash_commands_loading = false;
+            if (!m_providers.empty()) {
+                std::size_t skills_provider_index = panel.selected_provider;
+                if (skills_provider_index >= m_providers.size())
+                    skills_provider_index = 0;
+                if (!panel.is_generating &&
+                    m_providers[skills_provider_index]->availability != ProviderAvailability::Available) {
+                    for (std::size_t index = 0; index < m_providers.size(); ++index) {
+                        if (m_providers[index]->availability == ProviderAvailability::Available) {
+                            skills_provider_index = index;
+                            break;
+                        }
+                    }
+                }
+                Provider& skills_provider = *m_providers[skills_provider_index];
+                if (skills_provider.request_skills != nullptr) {
+                    std::error_code path_error;
+                    std::filesystem::path working_directory = std::filesystem::absolute(
+                        m_state.projects[m_state.selected_project].directory, path_error);
+                    if (!path_error) {
+                        working_directory = working_directory.lexically_normal();
+                        const std::string directory_key = skill_directory_key(working_directory);
+                        auto& snapshots = m_skill_snapshots[skills_provider_index];
+                        auto& requests = m_skill_requests[skills_provider_index];
+                        auto snapshot = snapshots.find(directory_key);
+                        if (snapshot == snapshots.end() && requests.find(directory_key) == requests.end()) {
+                            SkillDiscoverySnapshot failure;
+                            failure.working_directory = working_directory;
+                            const Result result = skills_provider.request_skills(
+                                &skills_provider, working_directory, false);
+                            if (result.status == ResultStatus::Error) {
+                                failure.error = result.error;
+                                snapshots[directory_key] = std::move(failure);
+                            } else {
+                                requests.insert(directory_key);
+                            }
+                        }
+                        snapshot = snapshots.find(directory_key);
+                        if (snapshot != snapshots.end())
+                            panel.slash_commands = snapshot->second.entries;
+                        panel.slash_commands_loading = requests.find(directory_key) != requests.end();
+                    }
+                }
+            }
             const std::string id = thread.id;
             render_chat_panel(m_state, m_providers, panel, m_next_turn_id,
                               m_file_dialog_queue, m_window);
@@ -929,12 +1014,20 @@ void UISystem::render_frame_to_backbuffer() {
 
     for (std::size_t index = 0; index < m_providers.size(); ++index) {
         Provider* provider = m_providers[index].get();
-        if (provider->poll_usage == nullptr)
-            continue;
-        std::optional<UsageSnapshot> updated = provider->poll_usage(provider);
-        if (updated.has_value()) {
-            m_usage_snapshots[index] = std::move(updated);
-            m_usage_loading[index] = false;
+        if (provider->poll_usage != nullptr) {
+            std::optional<UsageSnapshot> updated = provider->poll_usage(provider);
+            if (updated.has_value()) {
+                m_usage_snapshots[index] = std::move(updated);
+                m_usage_loading[index] = false;
+            }
+        }
+        if (provider->poll_skills != nullptr) {
+            for (SkillDiscoverySnapshot& snapshot : provider->poll_skills(provider)) {
+                const std::string directory_key =
+                    skill_directory_key(snapshot.working_directory);
+                m_skill_requests[index].erase(directory_key);
+                m_skill_snapshots[index][directory_key] = std::move(snapshot);
+            }
         }
     }
     if (m_usage_panel_open) {
@@ -1266,6 +1359,8 @@ void UISystem::render_settings_contents() {
         m_settings_page = SettingsPage::Chat;
     if (ImGui::Selectable("Providers", m_settings_page == SettingsPage::Providers))
         m_settings_page = SettingsPage::Providers;
+    if (ImGui::Selectable("Skills", m_settings_page == SettingsPage::Skills))
+        m_settings_page = SettingsPage::Skills;
     ImGui::EndChild();
     ImGui::SameLine();
 
@@ -1349,6 +1444,139 @@ void UISystem::render_settings_contents() {
         }
         ImGui::TextDisabled(
             "Used once after a thread's first message to create its title and sidebar description.");
+    }
+    if (m_settings_page == SettingsPage::Skills) {
+        ImGui::TextUnformatted("Skills");
+        ImGui::Spacing();
+        std::filesystem::path working_directory;
+        if (m_state.selected_project < m_state.projects.size())
+            working_directory = m_state.projects[m_state.selected_project].directory;
+        std::error_code path_error;
+        if (working_directory.empty())
+            working_directory = std::filesystem::current_path(path_error);
+        else
+            working_directory = std::filesystem::absolute(working_directory, path_error);
+        if (path_error) {
+            ImGui::TextColored(ImVec4(0.90f, 0.38f, 0.34f, 1.0f),
+                               "Could not resolve the selected project directory: %s",
+                               path_error.message().c_str());
+        } else {
+            working_directory = working_directory.lexically_normal();
+            const std::string directory_key = skill_directory_key(working_directory);
+            ImGui::TextDisabled("Selected project directory");
+            const std::string directory_text = path_utf8(working_directory);
+            ImGui::TextWrapped("%s", directory_text.c_str());
+            ImGui::Spacing();
+
+            const auto request_discovery = [this, &working_directory, &directory_key](
+                                               std::size_t provider_index, bool force_reload) {
+                Provider& provider = *m_providers[provider_index];
+                SkillDiscoverySnapshot failure;
+                failure.working_directory = working_directory;
+                const Result result = provider.request_skills(
+                    &provider, working_directory, force_reload);
+                if (result.status == ResultStatus::Error) {
+                    failure.error = result.error;
+                    m_skill_snapshots[provider_index][directory_key] = std::move(failure);
+                    m_skill_requests[provider_index].erase(directory_key);
+                } else {
+                    m_skill_requests[provider_index].insert(directory_key);
+                }
+            };
+
+            for (std::size_t index = 0; index < m_providers.size(); ++index) {
+                Provider& provider = *m_providers[index];
+                ImGui::PushID(static_cast<int>(index));
+                const auto snapshot = m_skill_snapshots[index].find(directory_key);
+                if (provider.request_skills != nullptr &&
+                    snapshot == m_skill_snapshots[index].end() &&
+                    m_skill_requests[index].find(directory_key) ==
+                        m_skill_requests[index].end()) {
+                    request_discovery(index, false);
+                }
+
+                if (begin_ui_card("##skill_provider")) {
+                    ImGui::TextUnformatted(provider.name.data(),
+                                           provider.name.data() + provider.name.size());
+                    if (provider.name == "GitHub Copilot") {
+                        ImGui::TextDisabled("Copilot user-invocable skills");
+                    }
+                    if (provider.request_skills == nullptr) {
+                        ImGui::TextDisabled(
+                            "This provider does not expose skill or command discovery.");
+                    } else {
+                        const bool loading = m_skill_requests[index].find(directory_key) !=
+                                             m_skill_requests[index].end();
+                        ImGui::SameLine();
+                        if (loading) {
+                            ImGui::TextDisabled("Discovering...");
+                        } else if (ImGui::SmallButton("Refresh")) {
+                            request_discovery(index, true);
+                        }
+
+                        const auto current = m_skill_snapshots[index].find(directory_key);
+                        if (current == m_skill_snapshots[index].end()) {
+                            if (!loading)
+                                ImGui::TextDisabled("Waiting for discovery...");
+                        } else {
+                            const SkillDiscoverySnapshot& skills = current->second;
+                            if (!skills.error.empty()) {
+                                ImGui::TextColored(ImVec4(0.90f, 0.38f, 0.34f, 1.0f),
+                                                   "%s", skills.error.c_str());
+                            }
+                            if (skills.entries.empty() && skills.error.empty())
+                                ImGui::TextDisabled("No skills were reported.");
+                            for (std::size_t entry_index = 0;
+                                 entry_index < skills.entries.size(); ++entry_index) {
+                                const SkillEntry& entry = skills.entries[entry_index];
+                                ImGui::PushID(static_cast<int>(entry_index));
+                                ImGui::Spacing();
+                                ImGui::TextWrapped("%s", entry.name.c_str());
+                                const char* entry_kind =
+                                    entry.kind == SkillEntryKind::Skill
+                                        ? "Skill" : "Command or skill";
+                                if (entry.scope.empty()) {
+                                    ImGui::TextDisabled("%s%s", entry_kind,
+                                        entry.enabled ? "" : " · disabled");
+                                } else {
+                                    ImGui::TextDisabled("%s · %s%s", entry_kind,
+                                        entry.scope.c_str(),
+                                        entry.enabled ? "" : " · disabled");
+                                }
+                                if (!entry.description.empty())
+                                    ImGui::TextWrapped("%s", entry.description.c_str());
+                                if (!entry.invocation.empty())
+                                    ImGui::TextDisabled("Invoke: %s",
+                                                        entry.invocation.c_str());
+                                if (!entry.input_hint.empty())
+                                    ImGui::TextDisabled("Arguments: %s",
+                                                        entry.input_hint.c_str());
+                                if (!entry.path.empty()) {
+                                    const std::string skill_path_text = path_utf8(entry.path);
+                                    ImGui::TextWrapped("%s", skill_path_text.c_str());
+                                    if (ImGui::SmallButton("Open skill file")) {
+                                        const std::string url = skill_file_url(entry.path);
+                                        if (url.empty() || !SDL_OpenURL(url.c_str())) {
+                                            ImGui::SameLine();
+                                            ImGui::TextColored(
+                                                ImVec4(0.90f, 0.38f, 0.34f, 1.0f),
+                                                "Could not open file: %s", SDL_GetError());
+                                        }
+                                    }
+                                }
+                                ImGui::PopID();
+                            }
+                            for (const std::string& error : skills.errors)
+                                ImGui::TextColored(ImVec4(0.90f, 0.62f, 0.30f, 1.0f),
+                                                   "%s", error.c_str());
+                        }
+                    }
+                }
+                end_ui_card();
+                ImGui::PopID();
+                ImGui::Spacing();
+            }
+        }
     }
     for (std::size_t index = 0; m_settings_page == SettingsPage::Providers && index < m_providers.size(); ++index) {
         Provider& provider = *m_providers[index];

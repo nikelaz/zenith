@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 
 struct ImGuiContext;
 struct ImFont;
@@ -42,7 +43,7 @@ private:
     float m_settings_dpi_scale = 0.0f;
     int m_title_bar_height = 0;
     bool m_appearance_edit_active = false;
-    enum class SettingsPage { Appearance, Chat, Providers };
+    enum class SettingsPage { Appearance, Chat, Providers, Skills };
     SettingsPage m_settings_page = SettingsPage::Appearance;
     ApplicationState& m_state;
     std::vector<ProviderPtr>& m_providers;
@@ -54,6 +55,8 @@ private:
         std::make_shared<FileDialogQueue>();
     std::vector<std::optional<UsageSnapshot>> m_usage_snapshots;
     std::vector<bool> m_usage_loading;
+    std::vector<std::unordered_map<std::string, SkillDiscoverySnapshot>> m_skill_snapshots;
+    std::vector<std::unordered_set<std::string>> m_skill_requests;
     SDL_GPUTexture* m_menu_icon_texture = nullptr;
     SDL_Rect m_title_bar_interactive_bounds[3] = {};
 

@@ -51,6 +51,26 @@ struct UsageSnapshot {
     std::string updated_at;
 };
 
+enum class SkillEntryKind { Skill, CommandOrSkill };
+
+struct SkillEntry {
+    std::string name;
+    std::string description;
+    std::filesystem::path path;
+    std::string scope;
+    std::string invocation;
+    std::string input_hint;
+    bool enabled = true;
+    SkillEntryKind kind = SkillEntryKind::Skill;
+};
+
+struct SkillDiscoverySnapshot {
+    std::filesystem::path working_directory;
+    std::vector<SkillEntry> entries;
+    std::vector<std::string> errors;
+    std::string error;
+};
+
 struct FileReference {
     std::filesystem::path path;
 };
@@ -118,6 +138,8 @@ using ProviderCancelFn = void (*)(Provider*, TurnId);
 using ProviderPollFn = std::vector<Event> (*)(Provider*);
 using ProviderRequestUsageFn = void (*)(Provider*);
 using ProviderPollUsageFn = std::optional<UsageSnapshot> (*)(Provider*);
+using ProviderRequestSkillsFn = Result (*)(Provider*, const std::filesystem::path&, bool);
+using ProviderPollSkillsFn = std::vector<SkillDiscoverySnapshot> (*)(Provider*);
 using ProviderDestroyFn = void (*)(Provider*);
 using ProviderEventSink = void (*)(void*, const Event*);
 
@@ -132,6 +154,8 @@ struct Provider {
     ProviderDestroyFn destroy;
     ProviderRequestUsageFn request_usage = nullptr;
     ProviderPollUsageFn poll_usage = nullptr;
+    ProviderRequestSkillsFn request_skills = nullptr;
+    ProviderPollSkillsFn poll_skills = nullptr;
     std::vector<ModelOption> models{};
     std::string default_model{};
     ProviderAvailability availability = ProviderAvailability::Unknown;

@@ -3,6 +3,8 @@
 #include <nlohmann/json.hpp>
 #include <cstdio>
 #include <ctime>
+#include <condition_variable>
+#include <deque>
 #include <filesystem>
 #include <map>
 #include <mutex>
@@ -25,6 +27,11 @@ const std::vector<PermissionOption>& codex_permission_modes() {
 std::string string_value(const Json& value, const char* key) {
     return value.contains(key) && value[key].is_string() ? value[key].get<std::string>()
                                                          : std::string{};
+}
+
+std::string path_utf8(const std::filesystem::path& path) {
+    const std::u8string value = path.generic_u8string();
+    return std::string(reinterpret_cast<const char*>(value.data()), value.size());
 }
 
 std::string json_text(const Json& value) {
@@ -52,6 +59,7 @@ struct CodexState {
     ChildProcess* startup_process = nullptr;
     bool shutting_down = false;
     std::mutex startup_mutex;
+    std::condition_variable startup_ready;
     bool startup_complete = false;
     bool startup_applied = false;
     ProviderAvailability startup_availability = ProviderAvailability::Unknown;
@@ -65,6 +73,17 @@ struct CodexState {
     UsageSnapshot usage_snapshot;
     std::thread usage_worker;
     ChildProcess* usage_process = nullptr;
+    std::mutex skills_mutex;
+    std::condition_variable skills_ready;
+    struct SkillsRequest {
+        std::filesystem::path working_directory;
+        bool force_reload = false;
+    };
+    std::deque<SkillsRequest> skills_requests;
+    std::vector<SkillDiscoverySnapshot> skills_updates;
+    bool skills_stopping = false;
+    std::thread skills_worker;
+    ChildProcess* skills_process = nullptr;
 };
 
 struct StreamContext {
@@ -573,6 +592,154 @@ std::vector<ModelOption> fetch_codex_models(CodexState* state,
     return models;
 }
 
+SkillDiscoverySnapshot fetch_codex_skills(CodexState* state,
+                                          const std::filesystem::path& working_directory,
+                                          bool force_reload) {
+    SkillDiscoverySnapshot snapshot;
+    snapshot.working_directory = working_directory;
+
+    ChildProcess process;
+    const Result start_result = start_codex_process(&state->options, &process);
+    if (start_result.status == ResultStatus::Error) {
+        child_process_stop(&process);
+        snapshot.error = start_result.error;
+        return snapshot;
+    }
+    {
+        std::lock_guard lock(state->active_mutex);
+        state->skills_process = &process;
+        if (state->shutting_down)
+            child_process_terminate(&process);
+    }
+
+    TurnRequest request;
+    StreamContext stream{&state->runtime, &request, false, false, {}};
+    std::string error;
+    const Json initialize = {
+        {"method", "initialize"}, {"id", 1},
+        {"params", {{"clientInfo", {{"name", "Zenith"}, {"title", "Zenith"},
+                                      {"version", "0.1.0"}}}}},
+    };
+    Json response;
+    bool success = write_message(process.input, initialize) &&
+        wait_for_response(&process, 1, &stream, nullptr, &error) &&
+        write_message(process.input, Json{{"method", "initialized"},
+                                          {"params", Json::object()}});
+    Json params = {{"cwds", Json::array({path_utf8(working_directory)})}};
+    if (force_reload)
+        params["forceReload"] = true;
+    if (success) {
+        success = write_message(process.input,
+                                Json{{"method", "skills/list"}, {"id", 2},
+                                     {"params", params}}) &&
+                  wait_for_response(&process, 2, &stream, &response, &error);
+    }
+
+    if (success) {
+        const Json data = response.value("result", Json::object())
+                              .value("data", Json::array());
+        if (!data.is_array()) {
+            snapshot.error = "Codex returned an invalid skills/list response";
+        } else {
+            for (const Json& directory : data) {
+                const Json skills = directory.value("skills", Json::array());
+                if (skills.is_array()) {
+                    for (const Json& value : skills) {
+                        if (!value.is_object())
+                            continue;
+                        SkillEntry entry;
+                        entry.name = string_value(value, "name");
+                        entry.description = string_value(value, "description");
+                        entry.invocation = "$" + entry.name;
+                        const std::string path = string_value(value, "path");
+                        if (!path.empty())
+                            entry.path = std::filesystem::u8path(path);
+                        entry.scope = string_value(value, "scope");
+                        if (value.contains("enabled") && value["enabled"].is_boolean())
+                            entry.enabled = value["enabled"].get<bool>();
+                        if (!entry.name.empty())
+                            snapshot.entries.push_back(std::move(entry));
+                    }
+                }
+                const Json errors = directory.value("errors", Json::array());
+                if (errors.is_array()) {
+                    for (const Json& value : errors) {
+                        if (!value.is_object())
+                            continue;
+                        const std::string path = string_value(value, "path");
+                        const std::string message = string_value(value, "message");
+                        snapshot.errors.push_back(path.empty() ? message : path + ": " + message);
+                    }
+                }
+            }
+        }
+    } else {
+        snapshot.error = error.empty() ? "Codex skill discovery failed" : error;
+    }
+
+    {
+        std::lock_guard lock(state->active_mutex);
+        if (state->skills_process == &process)
+            state->skills_process = nullptr;
+    }
+    child_process_stop(&process);
+    return snapshot;
+}
+
+void run_codex_skills(void* context) {
+    CodexState* state = static_cast<CodexState*>(context);
+    for (;;) {
+        CodexState::SkillsRequest request;
+        {
+            std::unique_lock lock(state->skills_mutex);
+            state->skills_ready.wait(lock, [state] {
+                return state->skills_stopping || !state->skills_requests.empty();
+            });
+            if (state->skills_stopping)
+                return;
+            request = std::move(state->skills_requests.front());
+            state->skills_requests.pop_front();
+        }
+
+        {
+            std::unique_lock lock(state->startup_mutex);
+            state->startup_ready.wait(lock, [state] { return state->startup_complete; });
+        }
+        {
+            std::lock_guard lock(state->skills_mutex);
+            if (state->skills_stopping)
+                return;
+        }
+
+        SkillDiscoverySnapshot snapshot = fetch_codex_skills(
+            state, request.working_directory, request.force_reload);
+        std::lock_guard lock(state->skills_mutex);
+        state->skills_updates.push_back(std::move(snapshot));
+    }
+}
+
+Result request_codex_skills(Provider* provider,
+                            const std::filesystem::path& working_directory,
+                            bool force_reload) {
+    CodexState* state = static_cast<CodexState*>(provider->state);
+    {
+        std::lock_guard lock(state->skills_mutex);
+        if (state->skills_stopping)
+            return result_error("Codex skill discovery is stopping");
+        state->skills_requests.push_back({working_directory, force_reload});
+    }
+    state->skills_ready.notify_one();
+    return result_ok();
+}
+
+std::vector<SkillDiscoverySnapshot> poll_codex_skills(Provider* provider) {
+    CodexState* state = static_cast<CodexState*>(provider->state);
+    std::lock_guard lock(state->skills_mutex);
+    std::vector<SkillDiscoverySnapshot> updates;
+    updates.swap(state->skills_updates);
+    return updates;
+}
+
 void initialize_codex(void* context, ProviderRuntime* runtime) {
     CodexState* state = static_cast<CodexState*>(context);
     ProviderAvailability availability = ProviderAvailability::Unavailable;
@@ -588,11 +755,14 @@ void initialize_codex(void* context, ProviderRuntime* runtime) {
         availability = ProviderAvailability::Available;
     }
 
-    std::lock_guard lock(state->startup_mutex);
-    state->startup_availability = availability;
-    state->startup_location = std::move(location);
-    state->startup_models = std::move(models);
-    state->startup_complete = true;
+    {
+        std::lock_guard lock(state->startup_mutex);
+        state->startup_availability = availability;
+        state->startup_location = std::move(location);
+        state->startup_models = std::move(models);
+        state->startup_complete = true;
+    }
+    state->startup_ready.notify_all();
 }
 
 Result run_codex(CodexState* state, const TurnRequest* request,
@@ -747,6 +917,9 @@ Result start_codex(Provider* provider) {
         state->usage_worker = std::thread(run_codex_usage, state);
         provider->request_usage = request_codex_usage;
         provider->poll_usage = poll_codex_usage;
+        state->skills_worker = std::thread(run_codex_skills, state);
+        provider->request_skills = request_codex_skills;
+        provider->poll_skills = poll_codex_skills;
     }
     return result_ok();
 }
@@ -813,14 +986,23 @@ void destroy_codex(Provider* provider) {
             child_process_terminate(state->startup_process);
         if (state->usage_process != nullptr && child_process_running(state->usage_process))
             child_process_terminate(state->usage_process);
+        if (state->skills_process != nullptr && child_process_running(state->skills_process))
+            child_process_terminate(state->skills_process);
     }
     {
         std::lock_guard lock(state->usage_mutex);
         state->usage_stopping = true;
     }
     state->usage_ready.notify_all();
+    {
+        std::lock_guard lock(state->skills_mutex);
+        state->skills_stopping = true;
+    }
+    state->skills_ready.notify_all();
     if (state->usage_worker.joinable())
         state->usage_worker.join();
+    if (state->skills_worker.joinable())
+        state->skills_worker.join();
     provider_runtime_shutdown(&state->runtime);
     delete state;
     delete provider;

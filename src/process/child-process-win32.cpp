@@ -86,7 +86,8 @@ Result child_process_start(
     ChildProcess* process, const std::filesystem::path& executable,
     const std::vector<std::string>& arguments, const char* process_name,
     const std::vector<ChildProcessEnvironmentVariable>& environment,
-    const std::filesystem::path& error_output_path) {
+    const std::filesystem::path& error_output_path,
+    const std::filesystem::path& working_directory) {
     *process = ChildProcess{};
 
     SECURITY_ATTRIBUTES security_attributes{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
@@ -195,8 +196,8 @@ Result child_process_start(
     PROCESS_INFORMATION child{};
     const BOOL started = CreateProcessW(
         application.c_str(), writable_command_line.data(), nullptr, nullptr, TRUE,
-        creation_flags, environment_block.empty() ? nullptr : environment_block.data(), nullptr,
-        &startup, &child);
+        creation_flags, environment_block.empty() ? nullptr : environment_block.data(),
+        working_directory.empty() ? nullptr : working_directory.c_str(), &startup, &child);
     CloseHandle(child_input);
     CloseHandle(child_output);
     CloseHandle(child_error);

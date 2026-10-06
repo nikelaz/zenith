@@ -26,7 +26,8 @@ Result child_process_start(
     ChildProcess* process, const std::filesystem::path& executable,
     const std::vector<std::string>& arguments, const char* process_name,
     const std::vector<ChildProcessEnvironmentVariable>& environment = {},
-    const std::filesystem::path& error_output_path = {});
+    const std::filesystem::path& error_output_path = {},
+    const std::filesystem::path& working_directory = {});
 bool child_process_running(const ChildProcess* process);
 void child_process_terminate(ChildProcess* process);
 void child_process_stop(ChildProcess* process);

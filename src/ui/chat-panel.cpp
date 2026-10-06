@@ -1399,6 +1399,210 @@ void render_file_picker(ChatPanelState& panel_state, std::string& input,
     ImGui::PopStyleVar(4);
 }
 
+bool find_slash_command_query(const std::string& input, ImGuiInputTextState* input_state,
+                              std::size_t* replace_start, std::size_t* replace_end,
+                              std::string* query) {
+    if (input_state == nullptr || input_state->HasSelection())
+        return false;
+
+    const std::size_t cursor = std::min(input.size(),
+        static_cast<std::size_t>(std::max(0, input_state->GetCursorPos())));
+    if (cursor == 0)
+        return false;
+
+    const std::size_t slash = input.rfind('/', cursor - 1);
+    if (slash == std::string::npos)
+        return false;
+    if (slash > 0) {
+        for (std::size_t index = 0; index < slash; ++index) {
+            if (!std::isspace(static_cast<unsigned char>(input[index])))
+                return false;
+        }
+    }
+
+    const std::size_t token_end = input.find_first_of(" \t\r\n", slash + 1);
+    const std::size_t end = token_end == std::string::npos ? input.size() : token_end;
+    if (cursor > end)
+        return false;
+
+    *replace_start = slash;
+    *replace_end = end;
+    *query = input.substr(slash + 1, end - slash - 1);
+    return true;
+}
+
+std::vector<std::size_t> matching_slash_commands(const ChatPanelState& panel_state) {
+    const std::string query = lowercase(panel_state.slash_picker_query);
+    std::vector<std::size_t> matches;
+    for (std::size_t index = 0; index < panel_state.slash_commands.size(); ++index) {
+        const SkillEntry& entry = panel_state.slash_commands[index];
+        if (!entry.enabled)
+            continue;
+        const std::string name = lowercase(entry.name);
+        if (query.empty() || name.find(query) != std::string::npos)
+            matches.push_back(index);
+    }
+    return matches;
+}
+
+constexpr std::size_t slash_picker_visible_rows = 6;
+
+float slash_picker_row_height() {
+    return ImGui::GetTextLineHeight() * 2.0f + ui_size(8.0f);
+}
+
+float slash_picker_height(std::size_t match_count) {
+    const std::size_t rows = std::clamp(match_count, std::size_t{1},
+                                        slash_picker_visible_rows);
+    return ui_size(file_picker_top_padding) + rows * slash_picker_row_height() +
+           ui_size(file_picker_bottom_padding);
+}
+
+void select_slash_command(ChatPanelState& panel_state, std::string& input,
+                          ImGuiInputTextState* input_state,
+                          const SkillEntry& entry) {
+    const std::string token = "/" + entry.name;
+    const bool needs_space = panel_state.slash_picker_replace_end == input.size() ||
+        !std::isspace(static_cast<unsigned char>(
+            input[panel_state.slash_picker_replace_end]));
+    input.replace(panel_state.slash_picker_replace_start,
+                  panel_state.slash_picker_replace_end - panel_state.slash_picker_replace_start,
+                  token + (needs_space ? " " : ""));
+    if (input_state != nullptr)
+        input_state->ReloadUserBufAndMoveToEnd();
+    panel_state.slash_picker_open = false;
+    panel_state.restore_input_focus = true;
+}
+
+void render_slash_picker(ChatPanelState& panel_state, std::string& input,
+                         ImGuiInputTextState* input_state, ImVec2 input_position,
+                         float width, bool* enter) {
+    if (!panel_state.slash_picker_open)
+        return;
+
+    const std::vector<std::size_t> matches = matching_slash_commands(panel_state);
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        panel_state.slash_picker_open = false;
+        panel_state.slash_picker_query_dismissed = true;
+        return;
+    }
+
+    if (!matches.empty()) {
+        if (panel_state.slash_picker_selected >= matches.size())
+            panel_state.slash_picker_selected = 0;
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, false))
+            panel_state.slash_picker_selected =
+                (panel_state.slash_picker_selected + 1) % matches.size();
+        else if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, false))
+            panel_state.slash_picker_selected = panel_state.slash_picker_selected == 0
+                ? matches.size() - 1 : panel_state.slash_picker_selected - 1;
+    } else {
+        panel_state.slash_picker_selected = 0;
+    }
+    if (*enter) {
+        *enter = false;
+        if (!matches.empty()) {
+            select_slash_command(panel_state, input, input_state,
+                panel_state.slash_commands[matches[panel_state.slash_picker_selected]]);
+            return;
+        }
+    }
+
+    const std::size_t visible_count = std::min(matches.size(), slash_picker_visible_rows);
+    std::size_t first_visible = 0;
+    if (panel_state.slash_picker_selected >= slash_picker_visible_rows)
+        first_visible = panel_state.slash_picker_selected - slash_picker_visible_rows + 1;
+    first_visible = std::min(first_visible, matches.size() - visible_count);
+    const float height = slash_picker_height(matches.size());
+    const ImVec2 popup_min(input_position.x, input_position.y - height - ui_size(8.0f));
+    ImGui::SetNextWindowPos(popup_min);
+    ImGui::SetNextWindowSize(ImVec2(width, height));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+                        ImVec2(0.0f, ui_size(file_picker_top_padding)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui_size(6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg,
+                          ImVec4(27.0f / 255.0f, 27.0f / 255.0f,
+                                 27.0f / 255.0f, 1.0f));
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
+        ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoScrollbar;
+    if (ImGui::Begin("##slash-command-picker", nullptr, flags)) {
+        if (matches.empty()) {
+            const ImVec2 row_min = ImGui::GetCursorScreenPos();
+            ImGui::Dummy(ImVec2(width, slash_picker_row_height()));
+            const char* status = panel_state.slash_commands_loading
+                ? "Discovering skills..." : "No matching skills";
+            ImGui::GetWindowDrawList()->AddText(
+                ImVec2(row_min.x + ui_size(12.0f),
+                       row_min.y + (slash_picker_row_height() - ImGui::GetFontSize()) * 0.5f),
+                ImGui::GetColorU32(ImGuiCol_TextDisabled), status);
+        } else {
+            for (std::size_t row = 0; row < visible_count; ++row) {
+                const std::size_t match_index = first_visible + row;
+                const std::size_t entry_index = matches[match_index];
+                const SkillEntry& entry = panel_state.slash_commands[entry_index];
+                const bool selected = panel_state.slash_picker_selected == match_index;
+                ImGui::PushID(static_cast<int>(entry_index));
+                const bool clicked = ImGui::InvisibleButton(
+                    "##slash-command-row", ImVec2(width, slash_picker_row_height()));
+                const ImVec2 row_min = ImGui::GetItemRectMin();
+                if (selected || ImGui::IsItemHovered()) {
+                    ImGui::GetWindowDrawList()->AddRectFilled(
+                        row_min, ImGui::GetItemRectMax(),
+                        ImGui::GetColorU32(ImVec4(51.0f / 255.0f,
+                                                  51.0f / 255.0f,
+                                                  51.0f / 255.0f, 1.0f)));
+                }
+                ImGui::GetWindowDrawList()->AddText(
+                    ImVec2(row_min.x + ui_size(12.0f), row_min.y + ui_size(3.0f)),
+                    ImGui::GetColorU32(ImGuiCol_Text), ("/" + entry.name).c_str());
+                if (!entry.description.empty()) {
+                    ImGui::GetWindowDrawList()->AddText(
+                        ImVec2(row_min.x + ui_size(12.0f),
+                               row_min.y + ImGui::GetTextLineHeight() + ui_size(3.0f)),
+                        ImGui::GetColorU32(ImGuiCol_TextDisabled),
+                        entry.description.c_str());
+                }
+                ImGui::PopID();
+                if (clicked) {
+                    panel_state.slash_picker_selected = match_index;
+                    select_slash_command(panel_state, input, input_state, entry);
+                    break;
+                }
+            }
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(4);
+}
+
+std::string provider_command_prompt(std::string prompt,
+                                    const std::vector<SkillEntry>& commands) {
+    std::size_t command_start = 0;
+    while (command_start < prompt.size() &&
+           std::isspace(static_cast<unsigned char>(prompt[command_start])))
+        ++command_start;
+    if (command_start == prompt.size() || prompt[command_start] != '/')
+        return prompt;
+
+    const std::size_t command_end = prompt.find_first_of(" \t\r\n", command_start);
+    const std::size_t end = command_end == std::string::npos ? prompt.size() : command_end;
+    const std::string name = prompt.substr(command_start + 1, end - command_start - 1);
+    const auto command = std::find_if(commands.begin(), commands.end(),
+        [&name](const SkillEntry& entry) {
+            return entry.enabled && entry.name == name;
+        });
+    if (command == commands.end() || command->invocation.empty())
+        return prompt;
+
+    prompt.replace(command_start, end - command_start, command->invocation);
+    return prompt;
+}
+
 }
 
 void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& providers,
@@ -1723,6 +1927,12 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             const int cursor = static_cast<int>(std::min(
                 panel_state.file_picker_cursor, message_input.size()));
             input_state->SetSelection(cursor, cursor);
+        } else if (panel_state.slash_picker_open && input_active && input_state != nullptr &&
+                   (ImGui::IsKeyPressed(ImGuiKey_UpArrow, false) ||
+                    ImGui::IsKeyPressed(ImGuiKey_DownArrow, false))) {
+            const int cursor = static_cast<int>(std::min(
+                panel_state.slash_picker_cursor, message_input.size()));
+            input_state->SetSelection(cursor, cursor);
         }
         static std::string composer_context_selection;
         if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(1)) {
@@ -1749,14 +1959,40 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             message_input, input_state, &replace_start, &replace_end, &file_query);
         if (has_file_query) {
             panel_state.file_picker_open = true;
+            panel_state.slash_picker_open = false;
             panel_state.file_picker_replace_start = replace_start;
             panel_state.file_picker_replace_end = replace_end;
             panel_state.file_picker_cursor = input_state->GetCursorPos();
             if (panel_state.file_picker_root != project_root ||
                 panel_state.file_picker_query != lowercase(file_query))
                 reset_file_picker_search(panel_state, project_root, file_query);
-        } else if (input_active) {
+        } else {
             panel_state.file_picker_open = false;
+        }
+
+        std::size_t slash_replace_start = 0;
+        std::size_t slash_replace_end = 0;
+        std::string slash_query;
+        const bool has_slash_query = input_active && find_slash_command_query(
+            message_input, input_state, &slash_replace_start, &slash_replace_end, &slash_query);
+        if (has_slash_query) {
+            panel_state.file_picker_open = false;
+            panel_state.slash_picker_replace_start = slash_replace_start;
+            panel_state.slash_picker_replace_end = slash_replace_end;
+            panel_state.slash_picker_cursor = input_state->GetCursorPos();
+            const std::string normalized_query = lowercase(slash_query);
+            if (panel_state.slash_picker_query != normalized_query) {
+                panel_state.slash_picker_selected = 0;
+                panel_state.slash_picker_query_dismissed = false;
+            }
+            panel_state.slash_picker_query = normalized_query;
+            panel_state.slash_picker_open =
+                !panel_state.slash_picker_query_dismissed &&
+                (panel_state.slash_commands_loading ||
+                 !matching_slash_commands(panel_state).empty());
+        } else if (input_active) {
+            panel_state.slash_picker_open = false;
+            panel_state.slash_picker_query_dismissed = false;
         }
         if (panel_state.file_picker_open)
             advance_file_picker_search(panel_state, panel_state.file_picker_root);
@@ -1775,8 +2011,26 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             if (!over_input && !over_picker)
                 panel_state.file_picker_open = false;
         }
+        if (!input_active && panel_state.slash_picker_open && ImGui::IsMouseClicked(0)) {
+            const ImVec2 mouse = ImGui::GetIO().MousePos;
+            const bool over_input = mouse.x >= input_pos.x + outer_padding &&
+                mouse.x < input_pos.x + full_width - outer_padding &&
+                mouse.y >= input_pos.y + outer_padding + attachment_row_height &&
+                mouse.y < input_pos.y + outer_padding + attachment_row_height + input_height;
+            const float popup_height = slash_picker_height(
+                matching_slash_commands(panel_state).size());
+            const ImVec2 popup_min(input_pos.x,
+                                   input_pos.y - popup_height - outer_padding);
+            const bool over_picker = mouse.x >= popup_min.x &&
+                mouse.x < popup_min.x + full_width &&
+                mouse.y >= popup_min.y && mouse.y < popup_min.y + popup_height;
+            if (!over_input && !over_picker)
+                panel_state.slash_picker_open = false;
+        }
         render_file_picker(panel_state, message_input, input_state, input_pos,
                            full_width, &enter);
+        render_slash_picker(panel_state, message_input, input_state, input_pos,
+                            full_width, &enter);
         const ImVec2 send_pos(frame_max.x - send_size - outer_padding,
                               divider_y + (footer_height - send_size) * 0.5f);
         const float selector_y = divider_y + (footer_height - ImGui::GetFrameHeight()) * 0.5f;
@@ -1955,7 +2209,8 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
             destination.messages.push_back(std::move(user_message));
             TurnRequest request;
             request.conversation_id = destination.id;
-            request.prompt = std::move(prompt);
+            request.prompt = provider_command_prompt(std::move(prompt),
+                                                     panel_state.slash_commands);
             request.history = destination.messages;
             request.attachments = std::move(panel_state.attachments);
             panel_state.attachments.clear();

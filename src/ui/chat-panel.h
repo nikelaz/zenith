@@ -38,6 +38,15 @@ struct ChatPanelState {
     std::size_t file_picker_replace_start = 0;
     std::size_t file_picker_replace_end = 0;
     bool file_picker_scan_complete = true;
+    std::vector<SkillEntry> slash_commands;
+    bool slash_commands_loading = false;
+    bool slash_picker_open = false;
+    std::size_t slash_picker_selected = 0;
+    std::size_t slash_picker_replace_start = 0;
+    std::size_t slash_picker_replace_end = 0;
+    std::size_t slash_picker_cursor = 0;
+    std::string slash_picker_query;
+    bool slash_picker_query_dismissed = false;
 };
 
 void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& providers,
