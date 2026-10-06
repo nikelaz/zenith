@@ -72,6 +72,7 @@ add_executable(Zenith
     src/platform/file-dialogs.cpp
     src/platform/message-box.cpp
     src/providers/provider_runtime.cpp
+    src/providers/provider_mcp_utils.cpp
     src/providers/codex_provider.cpp
     src/providers/github_copilot_provider.cpp
     src/providers/fake_provider.cpp
@@ -126,7 +127,7 @@ set_project_warnings(Zenith)
 
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(tests tests/provider_tests.cpp src/base/result.cpp ${CHILD_PROCESS_SOURCE} src/providers/provider_runtime.cpp src/providers/codex_provider.cpp src/providers/github_copilot_provider.cpp src/providers/fake_provider.cpp src/persistence/persistent-store.cpp)
+    add_executable(tests tests/provider_tests.cpp src/base/result.cpp ${CHILD_PROCESS_SOURCE} src/providers/provider_runtime.cpp src/providers/provider_mcp_utils.cpp src/providers/codex_provider.cpp src/providers/github_copilot_provider.cpp src/providers/fake_provider.cpp src/persistence/persistent-store.cpp)
     target_include_directories(tests PRIVATE third_party/json/include third_party/sqlite3)
     target_link_libraries(tests PRIVATE GTest::gtest_main SQLite3)
     set_project_warnings(tests)

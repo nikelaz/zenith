@@ -28,6 +28,8 @@ Result child_process_start(
     const std::vector<ChildProcessEnvironmentVariable>& environment = {},
     const std::filesystem::path& error_output_path = {},
     const std::filesystem::path& working_directory = {});
+Result child_process_wait(ChildProcess* process, std::uint32_t timeout_ms,
+                          int* exit_code);
 bool child_process_running(const ChildProcess* process);
 void child_process_terminate(ChildProcess* process);
 void child_process_stop(ChildProcess* process);

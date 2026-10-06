@@ -1,4 +1,5 @@
 #include "provider_runtime.h"
+#include "provider_mcp_utils.h"
 #include "../process/child-process.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -207,12 +208,17 @@ Result start_copilot_process(const GitHubCopilotOptions* options, const std::str
         effort.find_first_of("\"\\%!&|<>^\r\n") != std::string::npos)
         return result_error("Invalid GitHub Copilot model or effort identifier");
 
+    const std::filesystem::path executable =
+        child_process_resolve_executable(options->executable);
+    if (executable.empty())
+        return result_error("GitHub Copilot executable was not found");
+
     std::vector<std::string> arguments = {"--acp", "--stdio"};
     if (!model.empty())
         arguments.push_back("--model=" + model);
     if (!effort.empty())
         arguments.push_back("--effort=" + effort);
-    return child_process_start(process, options->executable, arguments,
+    return child_process_start(process, executable, arguments,
                                "GitHub Copilot ACP server", {}, error_output_path);
 }
 
@@ -729,8 +735,7 @@ bool create_copilot_session(ChildProcess* process, StreamContext* context,
         {"jsonrpc", "2.0"},
         {"id", 2},
         {"method", "session/new"},
-        {"params", {{"cwd", path_utf8(working_directory)},
-                     {"mcpServers", Json::array()}}},
+        {"params", {{"cwd", path_utf8(working_directory)}}},
     };
     return write_message(process->input, create) &&
            wait_for_response(process, 2, context, response, error);
@@ -1096,7 +1101,6 @@ void initialize_github_copilot(void* context, ProviderRuntime*) {
     std::string default_model = state->options.default_model;
     std::vector<ModelOption> models;
     if (!location.empty()) {
-        state->options.executable = location;
         discover_copilot_models(state, &state->runtime, &availability, &models,
                                 &default_model);
     }
@@ -1355,6 +1359,309 @@ void process_github_copilot(void* context, const TurnRequest* request,
     provider_runtime_emit(runtime, &completed);
 }
 
+std::string copilot_mcp_status_text(std::string status) {
+    std::transform(status.begin(), status.end(), status.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    std::replace(status.begin(), status.end(), '_', ' ');
+    std::replace(status.begin(), status.end(), '-', ' ');
+    if (status.rfind("connected", 0) == 0)
+        return "Connected";
+    if (status == "starting" || status == "pending" || status == "authenticating")
+        return "Starting";
+    if (status == "needs auth" || status == "authentication required" ||
+        status == "authenticationrequired")
+        return "Authentication required";
+    if (status == "failed" || status == "error")
+        return "Failed";
+    if (status == "disabled")
+        return "Disabled";
+    if (status == "enabled")
+        return "Enabled";
+    if (status == "not configured")
+        return "Not configured";
+    return status.empty() ? "Unknown" : status;
+}
+
+std::string copilot_source(const Json& entry, const std::string& source_hint) {
+    if (entry.contains("source")) {
+        if (entry["source"].is_string())
+            return entry["source"].get<std::string>();
+        if (entry["source"].is_object())
+            return string_value(entry["source"], "type");
+    }
+    return source_hint;
+}
+
+McpServer parse_copilot_mcp_server(const Json& entry, const std::string& source_hint) {
+    McpServer server;
+    server.name = string_value(entry, "name");
+    server.source = copilot_source(entry, source_hint);
+    const Json config = entry.value("config", entry.value("configuration", entry));
+    const Json transport = config.value("transport", Json::object());
+    const Json& definition = transport.is_object() ? transport : config;
+    std::string type = string_value(config, "type");
+    if (type.empty())
+        type = string_value(config, "transport");
+    if (type.empty())
+        type = string_value(definition, "type");
+    std::transform(type.begin(), type.end(), type.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    if (type == "http" || type == "sse" || type == "streamable_http") {
+        server.transport = McpServerTransport::Http;
+        server.url = string_value(definition, "url");
+        server.headers = {};
+        const Json headers = definition.value("headers", Json::object());
+        if (headers.is_object()) {
+            for (auto it = headers.begin(); it != headers.end(); ++it)
+                if (it.value().is_string())
+                    server.headers.emplace(it.key(), it.value().get<std::string>());
+        }
+        if (type == "sse")
+            server.editable = false;
+    } else if (type == "stdio" || type == "local" ||
+               definition.contains("command")) {
+        server.transport = McpServerTransport::Stdio;
+        server.command = string_value(definition, "command");
+        if (definition.contains("args") && definition["args"].is_array()) {
+            for (const Json& argument : definition["args"])
+                if (argument.is_string())
+                    server.arguments.push_back(argument.get<std::string>());
+        }
+        const Json environment = definition.value("env", Json::object());
+        if (environment.is_object()) {
+            for (auto it = environment.begin(); it != environment.end(); ++it)
+                if (it.value().is_string())
+                    server.environment.emplace(it.key(), it.value().get<std::string>());
+        }
+    } else {
+        server.editable = false;
+    }
+
+    const Json tools = config.value("tools", Json::array());
+    const bool all_tools = !tools.is_array() || tools.empty() ||
+        (tools.size() == 1 && tools.front().is_string() &&
+         tools.front().get<std::string>() == "*");
+    if (!all_tools ||
+        (config.contains("timeout") && !config["timeout"].is_null()) ||
+        (config.contains("cwd") && !config["cwd"].is_null()) ||
+        (config.contains("oauth") && !config["oauth"].is_null()) ||
+        (config.contains("oauthClientId") && !config["oauthClientId"].is_null()) ||
+        (config.contains("oauthClientSecret") && !config["oauthClientSecret"].is_null()))
+        server.editable = false;
+
+    if (entry.contains("enabled") && entry["enabled"].is_boolean())
+        server.enabled = entry["enabled"].get<bool>();
+    else if (config.contains("enabled") && config["enabled"].is_boolean())
+        server.enabled = config["enabled"].get<bool>();
+    if (!server.enabled)
+        server.status = "Disabled";
+    else {
+        std::string status = string_value(entry, "connectionStatus");
+        if (status.empty())
+            status = string_value(entry, "status");
+        server.status = copilot_mcp_status_text(std::move(status));
+        if (server.status == "Unknown")
+            server.status = "Enabled";
+    }
+    server.status_detail = string_value(entry, "error");
+    if (server.source.empty() || server.source == "user" || server.source == "User") {
+        server.removable = true;
+    } else {
+        server.editable = false;
+        server.removable = false;
+    }
+    if (!server.enabled)
+        server.editable = false;
+    if (!server.editable && server.status_detail.empty() && server.removable)
+        server.status_detail = "Edit this server in the Copilot configuration.";
+    return server;
+}
+
+void append_copilot_mcp_entries(const Json& value, const std::string& source_hint,
+                               std::vector<McpServer>* servers) {
+    if (value.is_array()) {
+        for (const Json& entry : value)
+            append_copilot_mcp_entries(entry, source_hint, servers);
+        return;
+    }
+    if (!value.is_object())
+        return;
+
+    const std::string name = string_value(value, "name");
+    if (!name.empty()) {
+        McpServer server = parse_copilot_mcp_server(value, source_hint);
+        servers->push_back(std::move(server));
+        return;
+    }
+
+    for (auto it = value.begin(); it != value.end(); ++it) {
+        std::string child_source = source_hint;
+        std::string group_name = it.key();
+        std::transform(group_name.begin(), group_name.end(), group_name.begin(),
+            [](unsigned char character) { return static_cast<char>(std::tolower(character)); });
+        if (group_name.find("user") != std::string::npos)
+            child_source = "user";
+        else if (group_name.find("workspace") != std::string::npos ||
+                 group_name.find("repository") != std::string::npos)
+            child_source = "workspace";
+        else if (group_name.find("plugin") != std::string::npos)
+            child_source = "plugin";
+        else if (group_name.find("builtin") != std::string::npos ||
+                 group_name.find("built in") != std::string::npos)
+            child_source = "builtin";
+
+        if ((it.key() == "mcpServers" || it.key() == "servers") &&
+            it.value().is_object()) {
+            for (auto server = it.value().begin(); server != it.value().end(); ++server) {
+                if (!server.value().is_object())
+                    continue;
+                Json named = server.value();
+                named["name"] = server.key();
+                append_copilot_mcp_entries(named, child_source, servers);
+            }
+        } else {
+            append_copilot_mcp_entries(it.value(), child_source, servers);
+        }
+    }
+}
+
+Result run_copilot_mcp_cli(CopilotState* state,
+                           const std::filesystem::path& working_directory,
+                           const std::vector<std::string>& arguments,
+                           std::string* output) {
+    return provider_mcp_run_cli(state->options.executable, arguments,
+                                working_directory, output);
+}
+
+Result read_copilot_mcp_servers(CopilotState* state,
+                                const std::filesystem::path& working_directory,
+                                std::vector<McpServer>* servers) {
+    std::string output;
+    Result result = run_copilot_mcp_cli(state, working_directory,
+                                        {"mcp", "list", "--json"}, &output);
+    if (result.status == ResultStatus::Error)
+        return result;
+    const std::size_t json_start = output.find_first_of("[{");
+    if (json_start == std::string::npos)
+        return result_error("GitHub Copilot returned invalid MCP server data");
+    Json entries;
+    try {
+        entries = Json::parse(output.substr(json_start));
+    } catch (...) {
+        return result_error("GitHub Copilot returned invalid MCP server data");
+    }
+    servers->clear();
+    append_copilot_mcp_entries(entries, "", servers);
+    std::sort(servers->begin(), servers->end(), [](const McpServer& left,
+                                                   const McpServer& right) {
+        if (left.source != right.source)
+            return left.source < right.source;
+        return left.name < right.name;
+    });
+    return result_ok();
+}
+
+std::vector<std::string> copilot_add_arguments(const McpServer& server) {
+    std::vector<std::string> arguments = {"mcp", "add"};
+    if (server.transport == McpServerTransport::Http) {
+        arguments.push_back("--transport");
+        arguments.push_back("http");
+        for (const auto& [key, value] : server.headers) {
+            arguments.push_back("--header");
+            arguments.push_back(key + ": " + value);
+        }
+        arguments.push_back(server.name);
+        arguments.push_back(server.url);
+    } else {
+        for (const auto& [key, value] : server.environment) {
+            arguments.push_back("--env");
+            arguments.push_back(key + "=" + value);
+        }
+        arguments.push_back(server.name);
+        arguments.push_back("--");
+        arguments.push_back(server.command);
+        arguments.insert(arguments.end(), server.arguments.begin(), server.arguments.end());
+    }
+    return arguments;
+}
+
+Result remove_copilot_mcp_server(CopilotState* state,
+                                 const std::filesystem::path& working_directory,
+                                 std::string_view name) {
+    std::string output;
+    return run_copilot_mcp_cli(state, working_directory,
+                               {"mcp", "remove", std::string(name)}, &output);
+}
+
+Result list_copilot_mcp_servers(Provider* provider,
+                               const std::filesystem::path& working_directory,
+                               std::vector<McpServer>* servers) {
+    return read_copilot_mcp_servers(static_cast<CopilotState*>(provider->state),
+                                    working_directory, servers);
+}
+
+Result upsert_copilot_mcp_server(Provider* provider,
+                                 const std::filesystem::path& working_directory,
+                                 std::string_view existing_name,
+                                 const McpServer& server) {
+    CopilotState* state = static_cast<CopilotState*>(provider->state);
+    if (server.name.empty())
+        return result_error("Enter a server name");
+    if (server.transport == McpServerTransport::Stdio && server.command.empty())
+        return result_error("Enter a command for the local server");
+    if (server.transport == McpServerTransport::Http && server.url.empty())
+        return result_error("Enter a URL for the HTTP server");
+
+    std::vector<McpServer> configured;
+    Result listed = read_copilot_mcp_servers(state, working_directory, &configured);
+    if (listed.status == ResultStatus::Error)
+        return listed;
+    const std::string old_name = existing_name.empty() ? server.name :
+                                 std::string(existing_name);
+    const auto old_server = std::find_if(configured.begin(), configured.end(),
+        [&old_name](const McpServer& value) { return value.name == old_name; });
+    if (existing_name.empty() && old_server != configured.end())
+        return result_error("A GitHub Copilot MCP server already uses that name");
+
+    const bool replacing = old_server != configured.end();
+    const McpServer old_definition = replacing ? *old_server : McpServer{};
+    if (replacing) {
+        if (!old_server->editable)
+            return result_error("This MCP server is managed by another configuration source");
+        Result removed = remove_copilot_mcp_server(state, working_directory, old_name);
+        if (removed.status == ResultStatus::Error)
+            return removed;
+    }
+
+    std::string output;
+    Result added = run_copilot_mcp_cli(state, working_directory,
+                                       copilot_add_arguments(server), &output);
+    if (added.status == ResultStatus::Error && replacing) {
+        std::string restore_output;
+        run_copilot_mcp_cli(state, working_directory,
+                            copilot_add_arguments(old_definition), &restore_output);
+    }
+    return added;
+}
+
+Result remove_copilot_mcp(Provider* provider,
+                          const std::filesystem::path& working_directory,
+                          std::string_view name) {
+    return remove_copilot_mcp_server(static_cast<CopilotState*>(provider->state),
+                                     working_directory, name);
+}
+
+Result set_copilot_mcp_enabled(Provider* provider,
+                               const std::filesystem::path& working_directory,
+                               std::string_view name, bool enabled) {
+    CopilotState* state = static_cast<CopilotState*>(provider->state);
+    std::string output;
+    return run_copilot_mcp_cli(state, working_directory,
+        {"mcp", enabled ? "enable" : "disable", std::string(name)}, &output);
+}
+
 Result start_github_copilot(Provider* provider) {
     CopilotState* state = static_cast<CopilotState*>(provider->state);
     provider->default_model = state->options.default_model;
@@ -1373,6 +1680,10 @@ Result start_github_copilot(Provider* provider) {
         state->skills_worker = std::thread(run_copilot_skills, state);
         provider->request_skills = request_copilot_skills;
         provider->poll_skills = poll_copilot_skills;
+        provider->list_mcp_servers = list_copilot_mcp_servers;
+        provider->upsert_mcp_server = upsert_copilot_mcp_server;
+        provider->remove_mcp_server = remove_copilot_mcp;
+        provider->set_mcp_server_enabled = set_copilot_mcp_enabled;
     }
     return result_ok();
 }

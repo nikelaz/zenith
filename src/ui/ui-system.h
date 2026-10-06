@@ -9,8 +9,12 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 #include <memory>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
@@ -25,11 +29,50 @@ private:
         std::string response;
     };
 
+    enum class McpTaskKind { Refresh, Upsert, Remove, SetEnabled };
+    struct McpTask {
+        McpTaskKind kind = McpTaskKind::Refresh;
+        std::size_t provider_index = 0;
+        std::filesystem::path working_directory;
+        std::string existing_name;
+        std::string name;
+        McpServer server;
+        bool enabled = true;
+    };
+    struct McpOperationFeedback {
+        McpTaskKind kind = McpTaskKind::Refresh;
+        std::string existing_name;
+        McpServer server;
+        bool enabled = true;
+        bool pending = true;
+        bool saved = false;
+        std::string error;
+    };
+    struct McpTaskResult {
+        McpTaskKind kind = McpTaskKind::Refresh;
+        std::size_t provider_index = 0;
+        std::filesystem::path working_directory;
+        std::string feedback_key;
+        std::vector<McpServer> servers;
+        std::string operation_error;
+        std::string list_error;
+        bool list_succeeded = false;
+    };
+    struct McpProviderSnapshot {
+        std::vector<McpServer> servers;
+        std::unordered_map<std::string, McpOperationFeedback> operation_feedback;
+        std::string error;
+        bool loaded = false;
+        bool attempted = false;
+        bool loading = false;
+    };
+
     bool m_initialized = false;
     bool m_open_settings_requested = false;
     bool m_threads_panel_open = true;
     bool m_chat_panel_open = true;
     bool m_usage_panel_open = true;
+    bool m_mcp_panel_open = true;
     bool m_close_settings_requested = false;
     SDL_Window* m_window = nullptr;
     SDL_Window* m_settings_window = nullptr;
@@ -57,6 +100,23 @@ private:
     std::vector<bool> m_usage_loading;
     std::vector<std::unordered_map<std::string, SkillDiscoverySnapshot>> m_skill_snapshots;
     std::vector<std::unordered_set<std::string>> m_skill_requests;
+    std::vector<std::unordered_map<std::string, McpProviderSnapshot>> m_mcp_snapshots;
+    std::mutex m_mcp_mutex;
+    std::condition_variable m_mcp_ready;
+    std::deque<McpTask> m_mcp_tasks;
+    std::deque<McpTaskResult> m_mcp_results;
+    std::thread m_mcp_worker;
+    bool m_mcp_worker_stopping = false;
+    bool m_mcp_dialog_open = false;
+    std::size_t m_mcp_dialog_provider = 0;
+    std::string m_mcp_edit_existing_name;
+    McpServer m_mcp_draft;
+    std::string m_mcp_arguments_text;
+    std::string m_mcp_environment_text;
+    std::string m_mcp_headers_text;
+    std::string m_mcp_dialog_error;
+    std::string m_mcp_delete_name;
+    std::size_t m_mcp_delete_provider = 0;
     SDL_GPUTexture* m_menu_icon_texture = nullptr;
     SDL_Rect m_title_bar_interactive_bounds[3] = {};
 
@@ -67,6 +127,10 @@ private:
     void render_settings_window();
     void render_settings_contents();
     void apply_appearance_settings();
+    void mcp_worker_loop();
+    void queue_mcp_task(McpTask task, bool explicit_refresh = false);
+    void update_mcp_results();
+    void render_mcp_panel();
     static SDL_HitTestResult SDLCALL title_bar_hit_test(SDL_Window* window,
                                                        const SDL_Point* point,
                                                        void* user_data);

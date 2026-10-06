@@ -13,6 +13,7 @@
 #include "chat-panel.h"
 #include "dock-area.h"
 #include "imgui.h"
+#include "misc/cpp/imgui_stdlib.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_sdlgpu3.h"
 #include "threads-panel.h"
@@ -25,6 +26,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iterator>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -40,6 +42,83 @@ std::string trim_string(std::string value) {
         return {};
     const std::size_t end = value.find_last_not_of(" \t\r\n");
     return value.substr(start, end - start + 1);
+}
+
+std::string mcp_map_text(const std::map<std::string, std::string>& values, bool headers) {
+    std::string text;
+    for (const auto& [key, value] : values) {
+        if (!text.empty())
+            text.push_back('\n');
+        text += key;
+        text += headers ? ": " : "=";
+        text += value;
+    }
+    return text;
+}
+
+bool parse_mcp_map_text(const std::string& text, bool headers,
+                        std::map<std::string, std::string>* values,
+                        std::string* error) {
+    values->clear();
+    std::istringstream lines(text);
+    std::string line;
+    std::size_t line_number = 0;
+    while (std::getline(lines, line)) {
+        ++line_number;
+        line = trim_string(std::move(line));
+        if (line.empty())
+            continue;
+        const std::size_t separator = line.find(headers ? ':' : '=');
+        if (separator == std::string::npos) {
+            *error = "Line " + std::to_string(line_number) +
+                (headers ? " needs the form Header: value." : " needs the form KEY=value.");
+            return false;
+        }
+        const std::string key = trim_string(line.substr(0, separator));
+        const std::string value = trim_string(line.substr(separator + 1));
+        if (key.empty()) {
+            *error = "Line " + std::to_string(line_number) + " has an empty key.";
+            return false;
+        }
+        (*values)[key] = value;
+    }
+    return true;
+}
+
+std::vector<std::string> parse_mcp_arguments(const std::string& text) {
+    std::vector<std::string> arguments;
+    std::istringstream lines(text);
+    std::string line;
+    while (std::getline(lines, line)) {
+        line = trim_string(std::move(line));
+        if (!line.empty())
+            arguments.push_back(std::move(line));
+    }
+    return arguments;
+}
+
+std::string mcp_arguments_text(const std::vector<std::string>& arguments) {
+    std::string text;
+    for (const std::string& argument : arguments) {
+        if (!text.empty())
+            text.push_back('\n');
+        text += argument;
+    }
+    return text;
+}
+
+std::string provider_display_name(std::string_view name) {
+    return name == "codex" ? "Codex" : std::string(name);
+}
+
+ImVec4 mcp_status_color(const std::string& status) {
+    if (status == "Connected")
+        return ImVec4(0.42f, 0.78f, 0.50f, 1.0f);
+    if (status == "Failed" || status == "Authentication required")
+        return ImVec4(0.90f, 0.38f, 0.34f, 1.0f);
+    if (status == "Disabled")
+        return ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
+    return ImVec4(0.90f, 0.68f, 0.32f, 1.0f);
 }
 
 std::string path_utf8(const std::filesystem::path& path) {
@@ -423,7 +502,7 @@ UISystem::UISystem(SDL_Window* window, SDL_GPUDevice* gpu_device,
     : m_window(window), m_gpu_device(gpu_device), m_state(state), m_providers(providers),
       m_chat_panel_state(), m_usage_snapshots(providers.size()),
       m_usage_loading(providers.size(), false), m_skill_snapshots(providers.size()),
-      m_skill_requests(providers.size()) {
+      m_skill_requests(providers.size()), m_mcp_snapshots(providers.size()) {
     m_chat_panel_state.selected_model = providers.empty()
         ? std::string{} : providers.front()->default_model;
     for (std::size_t index = 0; index < providers.size(); ++index) {
@@ -431,6 +510,157 @@ UISystem::UISystem(SDL_Window* window, SDL_GPUDevice* gpu_device,
             m_chat_panel_state.selected_provider = index;
             m_chat_panel_state.selected_model = providers[index]->default_model;
             break;
+        }
+    }
+}
+
+void UISystem::mcp_worker_loop() {
+    for (;;) {
+        McpTask task;
+        {
+            std::unique_lock lock(m_mcp_mutex);
+            m_mcp_ready.wait(lock, [this] {
+                return m_mcp_worker_stopping || !m_mcp_tasks.empty();
+            });
+            if (m_mcp_worker_stopping)
+                return;
+            task = std::move(m_mcp_tasks.front());
+            m_mcp_tasks.pop_front();
+        }
+
+        McpTaskResult result;
+        result.kind = task.kind;
+        result.provider_index = task.provider_index;
+        result.working_directory = task.working_directory;
+        if (task.kind == McpTaskKind::Upsert) {
+            result.feedback_key = task.existing_name.empty()
+                ? task.server.name : task.existing_name;
+        } else {
+            result.feedback_key = task.name;
+        }
+        if (task.provider_index >= m_providers.size()) {
+            result.operation_error = "Provider is no longer available.";
+        } else {
+            Provider& provider = *m_providers[task.provider_index];
+            Result operation = result_ok();
+            if (task.kind == McpTaskKind::Upsert) {
+                operation = provider.upsert_mcp_server == nullptr
+                    ? result_error("This provider does not support MCP server editing.")
+                    : provider.upsert_mcp_server(&provider, task.working_directory,
+                                                 task.existing_name, task.server);
+            } else if (task.kind == McpTaskKind::Remove) {
+                operation = provider.remove_mcp_server == nullptr
+                    ? result_error("This provider does not support MCP server removal.")
+                    : provider.remove_mcp_server(&provider, task.working_directory, task.name);
+            } else if (task.kind == McpTaskKind::SetEnabled) {
+                operation = provider.set_mcp_server_enabled == nullptr
+                    ? result_error("This provider does not support enabling or disabling MCP servers.")
+                    : provider.set_mcp_server_enabled(&provider, task.working_directory,
+                                                      task.name, task.enabled);
+            }
+            if (operation.status == ResultStatus::Error)
+                result.operation_error = operation.error;
+
+            if (provider.list_mcp_servers != nullptr) {
+                const Result listed = provider.list_mcp_servers(
+                    &provider, task.working_directory, &result.servers);
+                result.list_succeeded = listed.status == ResultStatus::Ok;
+                if (!result.list_succeeded)
+                    result.list_error = listed.error;
+            } else {
+                result.list_error = "This provider does not support MCP server listing.";
+            }
+        }
+
+        {
+            std::lock_guard lock(m_mcp_mutex);
+            m_mcp_results.push_back(std::move(result));
+        }
+    }
+}
+
+void UISystem::queue_mcp_task(McpTask task, bool explicit_refresh) {
+    if (task.provider_index >= m_mcp_snapshots.size() || !m_mcp_worker.joinable())
+        return;
+    const std::string key = skill_directory_key(task.working_directory);
+    McpProviderSnapshot& snapshot = m_mcp_snapshots[task.provider_index][key];
+    if (snapshot.loading)
+        return;
+    if (task.kind == McpTaskKind::Refresh && snapshot.attempted && !explicit_refresh)
+        return;
+    if (task.kind != McpTaskKind::Refresh) {
+        McpOperationFeedback feedback;
+        feedback.kind = task.kind;
+        feedback.existing_name = task.existing_name;
+        feedback.server = task.server;
+        feedback.enabled = task.enabled;
+        if (task.kind != McpTaskKind::Upsert) {
+            feedback.server.name = task.name;
+            for (const McpServer& server : snapshot.servers) {
+                if (server.name == task.name) {
+                    feedback.server = server;
+                    break;
+                }
+            }
+        }
+        const std::string feedback_key = task.kind == McpTaskKind::Upsert
+            ? (task.existing_name.empty() ? task.server.name : task.existing_name)
+            : task.name;
+        snapshot.operation_feedback[feedback_key] = std::move(feedback);
+    }
+    snapshot.loading = true;
+    snapshot.attempted = true;
+    snapshot.error.clear();
+    {
+        std::lock_guard lock(m_mcp_mutex);
+        if (m_mcp_worker_stopping) {
+            snapshot.loading = false;
+            return;
+        }
+        m_mcp_tasks.push_back(std::move(task));
+    }
+    m_mcp_ready.notify_one();
+}
+
+void UISystem::update_mcp_results() {
+    std::deque<McpTaskResult> results;
+    {
+        std::lock_guard lock(m_mcp_mutex);
+        results.swap(m_mcp_results);
+    }
+    for (McpTaskResult& result : results) {
+        if (result.provider_index >= m_mcp_snapshots.size())
+            continue;
+        McpProviderSnapshot& snapshot = m_mcp_snapshots[result.provider_index][
+            skill_directory_key(result.working_directory)];
+        snapshot.loading = false;
+        snapshot.error = result.kind == McpTaskKind::Refresh
+            ? std::move(result.list_error) : std::string{};
+        if (result.list_succeeded) {
+            snapshot.servers = std::move(result.servers);
+            snapshot.loaded = true;
+        }
+        if (result.kind == McpTaskKind::Refresh) {
+            if (result.list_succeeded)
+                snapshot.operation_feedback.clear();
+            continue;
+        }
+
+        const auto feedback_it = snapshot.operation_feedback.find(result.feedback_key);
+        if (feedback_it == snapshot.operation_feedback.end())
+            continue;
+        McpOperationFeedback& feedback = feedback_it->second;
+        feedback.pending = false;
+        feedback.error = std::move(result.operation_error);
+        if (!feedback.error.empty()) {
+            if (!result.list_error.empty())
+                feedback.error += "\nStatus refresh failed: " + result.list_error;
+        } else if (result.list_succeeded) {
+            snapshot.operation_feedback.erase(feedback_it);
+        } else {
+            feedback.saved = true;
+            feedback.error = "Saved, but the server status could not be refreshed: " +
+                result.list_error;
         }
     }
 }
@@ -487,6 +717,8 @@ Result UISystem::init() {
     }
     SDL_SetWindowHitTest(m_window, title_bar_hit_test, this);
     m_initialized = true;
+    m_mcp_worker_stopping = false;
+    m_mcp_worker = std::thread(&UISystem::mcp_worker_loop, this);
     for (std::size_t index = 0; index < m_providers.size(); ++index) {
         Provider* provider = m_providers[index].get();
         if (provider->request_usage != nullptr && provider->poll_usage != nullptr) {
@@ -568,6 +800,15 @@ void UISystem::apply_appearance_settings() {
 }
 
 void UISystem::deinit() {
+    if (m_mcp_worker.joinable()) {
+        {
+            std::lock_guard lock(m_mcp_mutex);
+            m_mcp_worker_stopping = true;
+            m_mcp_tasks.clear();
+        }
+        m_mcp_ready.notify_all();
+        m_mcp_worker.join();
+    }
     if (m_main_context == nullptr)
         return;
 
@@ -629,6 +870,7 @@ void UISystem::prepare_backbuffer() {
 }
 
 void UISystem::render_frame_to_backbuffer() {
+    update_mcp_results();
     for (const FileDialogResult& result : take_file_dialog_results(*m_file_dialog_queue)) {
         if (result.purpose == FileDialogPurpose::OpenProject) {
             apply_open_project_result(m_state, result, m_window);
@@ -838,16 +1080,19 @@ void UISystem::render_frame_to_backbuffer() {
             ImGui::MenuItem("Threads", nullptr, &m_threads_panel_open);
             ImGui::MenuItem("Chat", nullptr, &m_chat_panel_open);
             ImGui::MenuItem("Usage & Limits", nullptr, &m_usage_panel_open);
+            ImGui::MenuItem("MCP Servers", nullptr, &m_mcp_panel_open);
             ImGui::Separator();
             if (ImGui::MenuItem("Hide All Panes")) {
                 m_threads_panel_open = false;
                 m_chat_panel_open = false;
                 m_usage_panel_open = false;
+                m_mcp_panel_open = false;
             }
             if (ImGui::MenuItem("Show All Panes")) {
                 m_threads_panel_open = true;
                 m_chat_panel_open = true;
                 m_usage_panel_open = true;
+                m_mcp_panel_open = true;
             }
             ImGui::EndMenu();
         }
@@ -1175,6 +1420,8 @@ void UISystem::render_frame_to_backbuffer() {
         ImGui::End();
     }
 
+    render_mcp_panel();
+
     ImGuiViewport* viewport = ImGui::GetMainViewport();
     const ImVec2 panel_area_max(viewport->WorkPos.x + viewport->WorkSize.x,
                                 viewport->WorkPos.y + viewport->WorkSize.y);
@@ -1185,6 +1432,413 @@ void UISystem::render_frame_to_backbuffer() {
 
     prepare_backbuffer();
     render_settings_window();
+}
+
+void UISystem::render_mcp_panel() {
+    if (!m_mcp_panel_open)
+        return;
+
+    if (!ImGui::Begin("MCP Servers", &m_mcp_panel_open)) {
+        ImGui::End();
+        return;
+    }
+    std::filesystem::path working_directory;
+    std::error_code path_error;
+    if (m_state.selected_project < m_state.projects.size() &&
+        !m_state.projects[m_state.selected_project].directory.empty()) {
+        working_directory = std::filesystem::absolute(
+            m_state.projects[m_state.selected_project].directory, path_error);
+    } else {
+        working_directory = std::filesystem::current_path(path_error);
+    }
+    if (path_error) {
+        ImGui::TextColored(ImVec4(0.90f, 0.38f, 0.34f, 1.0f),
+                           "Could not resolve the project directory: %s",
+                           path_error.message().c_str());
+        ImGui::End();
+        return;
+    }
+    working_directory = working_directory.lexically_normal();
+    const std::string directory_key = skill_directory_key(working_directory);
+
+    for (std::size_t index = 0; index < m_providers.size(); ++index) {
+        Provider& provider = *m_providers[index];
+        if (provider.list_mcp_servers == nullptr)
+            continue;
+        const auto snapshot = m_mcp_snapshots[index].find(directory_key);
+        if (snapshot == m_mcp_snapshots[index].end() || !snapshot->second.attempted) {
+            McpTask task;
+            task.kind = McpTaskKind::Refresh;
+            task.provider_index = index;
+            task.working_directory = working_directory;
+            queue_mcp_task(std::move(task));
+        }
+    }
+
+    const auto open_server_dialog = [this](std::size_t provider_index,
+                                           const McpServer* server,
+                                           bool is_existing,
+                                           const std::string& existing_name) {
+        m_mcp_dialog_provider = provider_index;
+        m_mcp_edit_existing_name.clear();
+        m_mcp_draft = server == nullptr ? McpServer{} : *server;
+        if (server != nullptr && is_existing)
+            m_mcp_edit_existing_name = existing_name.empty() ? server->name : existing_name;
+        m_mcp_arguments_text = mcp_arguments_text(m_mcp_draft.arguments);
+        m_mcp_environment_text = mcp_map_text(m_mcp_draft.environment, false);
+        m_mcp_headers_text = mcp_map_text(m_mcp_draft.headers, true);
+        m_mcp_dialog_error.clear();
+        m_mcp_dialog_open = true;
+    };
+
+    if (ImGui::BeginTabBar("##mcp_providers")) {
+        for (std::size_t index = 0; index < m_providers.size(); ++index) {
+            Provider& provider = *m_providers[index];
+            const std::string provider_name = provider_display_name(provider.name);
+            if (!ImGui::BeginTabItem(provider_name.c_str()))
+                continue;
+
+            ImGui::PushID(static_cast<int>(index));
+            McpProviderSnapshot& snapshot = m_mcp_snapshots[index][directory_key];
+            ImGui::TextDisabled("Project");
+            ImGui::SameLine();
+            const std::string project_path = path_utf8(working_directory);
+            ImGui::TextWrapped("%s", project_path.c_str());
+            ImGui::Spacing();
+
+            ImGui::BeginDisabled(snapshot.loading || provider.list_mcp_servers == nullptr);
+            if (ImGui::Button(snapshot.loading ? "Checking..." : "Refresh status")) {
+                McpTask task;
+                task.kind = McpTaskKind::Refresh;
+                task.provider_index = index;
+                task.working_directory = working_directory;
+                queue_mcp_task(std::move(task), true);
+            }
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(snapshot.loading || provider.upsert_mcp_server == nullptr);
+            if (ImGui::Button("Add MCP server"))
+                open_server_dialog(index, nullptr, false, {});
+            ImGui::EndDisabled();
+
+            if (!snapshot.error.empty()) {
+                ImGui::Spacing();
+                ImGui::TextWrapped("%s", snapshot.error.c_str());
+            }
+            if (snapshot.loading && !snapshot.loaded) {
+                ImGui::Spacing();
+                ImGui::TextDisabled("Loading MCP servers and connection status...");
+            } else if (provider.list_mcp_servers == nullptr) {
+                ImGui::Spacing();
+                ImGui::TextDisabled("This provider does not expose MCP server management.");
+            } else if (snapshot.loaded && snapshot.servers.empty() &&
+                       snapshot.operation_feedback.empty()) {
+                ImGui::Spacing();
+                ImGui::TextDisabled("No MCP servers are configured for this provider.");
+            }
+
+            std::unordered_set<std::string> rendered_feedback;
+            std::vector<std::string> dismissed_feedback;
+            const auto render_server_card = [&](const McpServer& server,
+                                                McpOperationFeedback* feedback,
+                                                bool optimistic_add) {
+                McpServer displayed_server = server;
+                if (feedback != nullptr && feedback->kind == McpTaskKind::Upsert)
+                    displayed_server = feedback->server;
+                else if (feedback != nullptr && feedback->kind == McpTaskKind::SetEnabled &&
+                         feedback->pending)
+                    displayed_server.enabled = feedback->enabled;
+
+                std::string status = displayed_server.status;
+                if (feedback != nullptr) {
+                    if (feedback->pending) {
+                        switch (feedback->kind) {
+                        case McpTaskKind::Upsert:
+                            status = feedback->existing_name.empty()
+                                ? "Initializing..." : "Updating...";
+                            break;
+                        case McpTaskKind::Remove:
+                            status = "Removing...";
+                            break;
+                        case McpTaskKind::SetEnabled:
+                            status = feedback->enabled ? "Enabling..." : "Disabling...";
+                            break;
+                        case McpTaskKind::Refresh:
+                            break;
+                        }
+                    } else if (!feedback->error.empty() && !feedback->saved) {
+                        status = "Failed";
+                    } else if (feedback->saved) {
+                        status = "Status unavailable";
+                    }
+                }
+
+                ImGui::PushID(server.name.c_str());
+                if (begin_ui_card("##mcp_server")) {
+                    ImGui::TextWrapped("%s", displayed_server.name.c_str());
+                    ImGui::SameLine();
+                    ImGui::TextColored(mcp_status_color(status), "%s", status.c_str());
+                    if (!displayed_server.source.empty())
+                        ImGui::TextDisabled("Source: %s", displayed_server.source.c_str());
+                    if (displayed_server.transport == McpServerTransport::Stdio) {
+                        ImGui::TextWrapped("Local · %s", displayed_server.command.c_str());
+                        if (!displayed_server.arguments.empty()) {
+                            const std::string arguments =
+                                mcp_arguments_text(displayed_server.arguments);
+                            ImGui::TextWrapped("Arguments: %s", arguments.c_str());
+                        }
+                        if (!displayed_server.environment.empty())
+                            ImGui::TextDisabled("%zu environment variable(s)",
+                                                displayed_server.environment.size());
+                    } else {
+                        ImGui::TextWrapped("HTTP · %s", displayed_server.url.c_str());
+                        if (!displayed_server.bearer_token_env_var.empty())
+                            ImGui::TextDisabled("Bearer token: %s",
+                                displayed_server.bearer_token_env_var.c_str());
+                        if (!displayed_server.headers.empty())
+                            ImGui::TextDisabled("%zu HTTP header(s)",
+                                                displayed_server.headers.size());
+                    }
+                    if (!displayed_server.status_detail.empty())
+                        ImGui::TextWrapped("%s", displayed_server.status_detail.c_str());
+                    if (feedback != nullptr && feedback->pending) {
+                        const char* progress_text = feedback->kind == McpTaskKind::Upsert
+                            ? (feedback->existing_name.empty()
+                                ? "Initializing MCP server..." : "Saving MCP server changes...")
+                            : feedback->kind == McpTaskKind::Remove
+                                ? "Removing MCP server..."
+                                : feedback->enabled
+                                    ? "Enabling MCP server..." : "Disabling MCP server...";
+                        ImGui::TextDisabled("%s", progress_text);
+                    }
+                    if (feedback != nullptr && !feedback->error.empty()) {
+                        const ImVec4 error_color = feedback->saved
+                            ? ImVec4(0.90f, 0.68f, 0.32f, 1.0f)
+                            : ImVec4(0.90f, 0.38f, 0.34f, 1.0f);
+                        ImGui::PushStyleColor(ImGuiCol_Text, error_color);
+                        ImGui::TextWrapped("%s", feedback->error.c_str());
+                        ImGui::PopStyleColor();
+                    }
+
+                    const bool controls_disabled = snapshot.loading;
+                    if (optimistic_add && feedback != nullptr && !feedback->pending) {
+                        ImGui::BeginDisabled(controls_disabled);
+                        if (ImGui::SmallButton("Edit"))
+                            open_server_dialog(index, &feedback->server, false, {});
+                        ImGui::EndDisabled();
+                        ImGui::SameLine();
+                        ImGui::BeginDisabled(controls_disabled);
+                        if (ImGui::SmallButton("Dismiss"))
+                            dismissed_feedback.push_back(server.name);
+                        ImGui::EndDisabled();
+                    } else {
+                        if (server.editable && provider.upsert_mcp_server != nullptr) {
+                            ImGui::BeginDisabled(controls_disabled);
+                            if (ImGui::SmallButton("Edit")) {
+                                const std::string existing_name =
+                                    feedback != nullptr &&
+                                    feedback->kind == McpTaskKind::Upsert
+                                    ? feedback->existing_name : server.name;
+                                open_server_dialog(index, &displayed_server, true,
+                                                   existing_name);
+                            }
+                            ImGui::EndDisabled();
+                        }
+                        if (server.removable && provider.remove_mcp_server != nullptr) {
+                            if (server.editable || provider.upsert_mcp_server == nullptr)
+                                ImGui::SameLine();
+                            ImGui::BeginDisabled(controls_disabled);
+                            if (ImGui::SmallButton("Remove")) {
+                                m_mcp_delete_name = server.name;
+                                m_mcp_delete_provider = index;
+                            }
+                            ImGui::EndDisabled();
+                        }
+                        if (server.removable && provider.set_mcp_server_enabled != nullptr) {
+                            ImGui::SameLine();
+                            ImGui::BeginDisabled(controls_disabled);
+                            if (ImGui::SmallButton(displayed_server.enabled
+                                    ? "Disable" : "Enable")) {
+                                McpTask task;
+                                task.kind = McpTaskKind::SetEnabled;
+                                task.provider_index = index;
+                                task.working_directory = working_directory;
+                                task.name = server.name;
+                                task.enabled = !server.enabled;
+                                queue_mcp_task(std::move(task));
+                            }
+                            ImGui::EndDisabled();
+                        }
+                    }
+                }
+                end_ui_card();
+                ImGui::PopID();
+                ImGui::Spacing();
+            };
+
+            for (const McpServer& server : snapshot.servers) {
+                auto feedback_it = snapshot.operation_feedback.find(server.name);
+                McpOperationFeedback* feedback = feedback_it ==
+                    snapshot.operation_feedback.end() ? nullptr : &feedback_it->second;
+                if (feedback != nullptr)
+                    rendered_feedback.insert(feedback_it->first);
+                render_server_card(server, feedback, false);
+            }
+            for (auto& [feedback_key, feedback] : snapshot.operation_feedback) {
+                if (feedback.server.name.empty() ||
+                    rendered_feedback.find(feedback_key) != rendered_feedback.end())
+                    continue;
+                const bool optimistic_add = feedback.kind == McpTaskKind::Upsert &&
+                    feedback.existing_name.empty();
+                render_server_card(feedback.server, &feedback, optimistic_add);
+            }
+            for (const std::string& name : dismissed_feedback)
+                snapshot.operation_feedback.erase(name);
+            ImGui::PopID();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+
+    if (m_mcp_dialog_open && !ImGui::IsPopupOpen("MCP Server Dialog"))
+        ImGui::OpenPopup("MCP Server Dialog");
+    if (ImGui::BeginPopupModal("MCP Server Dialog", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        const bool editing = !m_mcp_edit_existing_name.empty();
+        const std::string provider_name = m_mcp_dialog_provider < m_providers.size()
+            ? provider_display_name(m_providers[m_mcp_dialog_provider]->name) : "Provider";
+        ImGui::Text("%s MCP server for %s", editing ? "Edit" : "Add", provider_name.c_str());
+        ImGui::Spacing();
+        ImGui::SetNextItemWidth(ui_size(440.0f));
+        ImGui::InputText("Name", &m_mcp_draft.name);
+        const char* transport_preview = m_mcp_draft.transport == McpServerTransport::Stdio
+            ? "Local (stdio)" : "HTTP";
+        if (ImGui::BeginCombo("Transport", transport_preview)) {
+            const bool local_selected = m_mcp_draft.transport == McpServerTransport::Stdio;
+            if (ImGui::Selectable("Local (stdio)", local_selected))
+                m_mcp_draft.transport = McpServerTransport::Stdio;
+            if (local_selected)
+                ImGui::SetItemDefaultFocus();
+            const bool http_selected = m_mcp_draft.transport == McpServerTransport::Http;
+            if (ImGui::Selectable("HTTP", http_selected))
+                m_mcp_draft.transport = McpServerTransport::Http;
+            if (http_selected)
+                ImGui::SetItemDefaultFocus();
+            ImGui::EndCombo();
+        }
+        if (m_mcp_draft.transport == McpServerTransport::Stdio) {
+            ImGui::SetNextItemWidth(ui_size(440.0f));
+            ImGui::InputText("Command", &m_mcp_draft.command);
+            ImGui::InputTextMultiline("Arguments (one per line)", &m_mcp_arguments_text,
+                                      ImVec2(ui_size(440.0f), ui_size(74.0f)));
+            ImGui::InputTextMultiline("Environment (KEY=value per line)",
+                                      &m_mcp_environment_text,
+                                      ImVec2(ui_size(440.0f), ui_size(70.0f)),
+                                      ImGuiInputTextFlags_Password);
+        } else {
+            ImGui::SetNextItemWidth(ui_size(440.0f));
+            ImGui::InputText("URL", &m_mcp_draft.url);
+            if (m_mcp_dialog_provider < m_providers.size() &&
+                m_providers[m_mcp_dialog_provider]->name == "codex") {
+                ImGui::InputText("Bearer token environment variable",
+                                 &m_mcp_draft.bearer_token_env_var);
+            } else {
+                ImGui::InputTextMultiline("HTTP headers (Header: value per line)",
+                                          &m_mcp_headers_text,
+                                          ImVec2(ui_size(440.0f), ui_size(100.0f)),
+                                          ImGuiInputTextFlags_Password);
+            }
+        }
+        if (!m_mcp_dialog_error.empty()) {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.90f, 0.38f, 0.34f, 1.0f), "%s",
+                               m_mcp_dialog_error.c_str());
+        }
+        ImGui::Spacing();
+        if (ImGui::Button(editing ? "Save changes" : "Add server")) {
+            m_mcp_dialog_error.clear();
+            McpServer server = m_mcp_draft;
+            std::string parse_error;
+            if (server.transport == McpServerTransport::Stdio) {
+                server.arguments = parse_mcp_arguments(m_mcp_arguments_text);
+                if (!parse_mcp_map_text(m_mcp_environment_text, false,
+                                        &server.environment, &parse_error)) {
+                    m_mcp_dialog_error = parse_error;
+                } else {
+                    server.url.clear();
+                    server.headers.clear();
+                }
+            } else if (m_mcp_dialog_provider < m_providers.size() &&
+                       m_providers[m_mcp_dialog_provider]->name != "codex") {
+                if (!parse_mcp_map_text(m_mcp_headers_text, true,
+                                        &server.headers, &parse_error))
+                    m_mcp_dialog_error = parse_error;
+                server.command.clear();
+                server.arguments.clear();
+                server.environment.clear();
+            } else {
+                server.headers.clear();
+                server.command.clear();
+                server.arguments.clear();
+                server.environment.clear();
+            }
+            if (parse_error.empty() && m_mcp_dialog_error.empty()) {
+                if (server.name.empty()) {
+                    m_mcp_dialog_error = "Enter a server name.";
+                } else if (server.transport == McpServerTransport::Stdio &&
+                           server.command.empty()) {
+                    m_mcp_dialog_error = "Enter a command for the local server.";
+                } else if (server.transport == McpServerTransport::Http &&
+                           server.url.empty()) {
+                    m_mcp_dialog_error = "Enter a server URL.";
+                } else if (m_mcp_dialog_provider >= m_providers.size()) {
+                    m_mcp_dialog_error = "The selected provider is unavailable.";
+                } else {
+                    McpTask task;
+                    task.kind = McpTaskKind::Upsert;
+                    task.provider_index = m_mcp_dialog_provider;
+                    task.working_directory = working_directory;
+                    task.existing_name = m_mcp_edit_existing_name;
+                    task.server = std::move(server);
+                    queue_mcp_task(std::move(task));
+                    m_mcp_dialog_open = false;
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) {
+            m_mcp_dialog_open = false;
+            m_mcp_dialog_error.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+
+    if (!m_mcp_delete_name.empty() && !ImGui::IsPopupOpen("Remove MCP Server"))
+        ImGui::OpenPopup("Remove MCP Server");
+    if (ImGui::BeginPopupModal("Remove MCP Server", nullptr,
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::TextWrapped("Remove '%s' from this provider's MCP configuration?",
+                           m_mcp_delete_name.c_str());
+        if (ImGui::Button("Remove server")) {
+            McpTask task;
+            task.kind = McpTaskKind::Remove;
+            task.provider_index = m_mcp_delete_provider;
+            task.working_directory = working_directory;
+            task.name = m_mcp_delete_name;
+            queue_mcp_task(std::move(task));
+            m_mcp_delete_name.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel removal")) {
+            m_mcp_delete_name.clear();
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
+    ImGui::End();
 }
 
 bool UISystem::open_settings_window() {

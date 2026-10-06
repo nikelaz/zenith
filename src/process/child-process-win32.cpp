@@ -4,6 +4,8 @@
 #include <cwctype>
 #include <fcntl.h>
 #include <io.h>
+#include <thread>
+#include <chrono>
 #include <system_error>
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -241,6 +243,35 @@ Result child_process_start(
     // MSVC requires a nonzero size for line-buffered streams. This pipe carries
     // newline-delimited protocol messages, so leave it unbuffered instead.
     setvbuf(process->input, nullptr, _IONBF, 0);
+    return result_ok();
+}
+
+Result child_process_wait(ChildProcess* process, std::uint32_t timeout_ms,
+                          int* exit_code) {
+    if (process->process_handle == nullptr)
+        return result_error("Process is not running");
+
+    HANDLE handle = static_cast<HANDLE>(process->process_handle);
+    const DWORD wait_result = WaitForSingleObject(handle, timeout_ms);
+    if (wait_result == WAIT_TIMEOUT) {
+        TerminateProcess(handle, 1);
+        WaitForSingleObject(handle, INFINITE);
+        process->process_handle = nullptr;
+        process->process_id = 0;
+        CloseHandle(handle);
+        return result_error("Process timed out");
+    }
+    if (wait_result != WAIT_OBJECT_0)
+        return result_error("Failed to wait for child process");
+
+    DWORD status = 0;
+    if (!GetExitCodeProcess(handle, &status))
+        return result_error("Failed to read child process exit code");
+    process->process_handle = nullptr;
+    process->process_id = 0;
+    CloseHandle(handle);
+    if (exit_code != nullptr)
+        *exit_code = static_cast<int>(status);
     return result_ok();
 }
 

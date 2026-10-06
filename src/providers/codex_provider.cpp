@@ -1,11 +1,16 @@
 #include "provider_runtime.h"
+#include "provider_mcp_utils.h"
 #include "../process/child-process.h"
 #include <nlohmann/json.hpp>
 #include <cstdio>
+#include <algorithm>
+#include <chrono>
+#include <cctype>
 #include <ctime>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
+#include <future>
 #include <map>
 #include <mutex>
 #include <string>
@@ -157,13 +162,18 @@ Event make_tool_activity_event(StreamContext* context, const Json& item, bool co
     return event;
 }
 
-Result start_codex_process(const CodexOptions* options, ChildProcess* process) {
+Result start_codex_process(const CodexOptions* options, ChildProcess* process,
+                          const std::filesystem::path& working_directory = {}) {
+    const std::filesystem::path executable =
+        child_process_resolve_executable(options->executable);
+    if (executable.empty())
+        return result_error("Codex executable was not found");
     std::vector<std::string> arguments = {"app-server"};
     std::vector<ChildProcessEnvironmentVariable> environment;
     if (!options->codex_home.empty())
         environment.push_back({"CODEX_HOME", options->codex_home});
-    return child_process_start(process, options->executable, arguments, "Codex app-server",
-                               environment);
+    return child_process_start(process, executable, arguments, "Codex app-server",
+                               environment, {}, working_directory);
 }
 
 bool write_message(FILE* input, const Json& message) {
@@ -740,6 +750,301 @@ std::vector<SkillDiscoverySnapshot> poll_codex_skills(Provider* provider) {
     return updates;
 }
 
+std::string json_string(const Json& value, const char* key) {
+    return value.contains(key) && value[key].is_string()
+        ? value[key].get<std::string>() : std::string{};
+}
+
+std::string mcp_status_text(std::string status) {
+    std::transform(status.begin(), status.end(), status.begin(), [](unsigned char character) {
+        return static_cast<char>(std::tolower(character));
+    });
+    std::replace(status.begin(), status.end(), '_', ' ');
+    if (status == "connected")
+        return "Connected";
+    if (status == "starting")
+        return "Starting";
+    if (status == "authenticationrequired" || status == "authentication required" ||
+        status == "needs auth" || status == "notloggedin" || status == "not logged in")
+        return "Authentication required";
+    if (status == "failed")
+        return "Failed";
+    if (status == "disabled")
+        return "Disabled";
+    if (status == "cancelled")
+        return "Cancelled";
+    if (status == "notstarted" || status == "not started")
+        return "Not started";
+    return status.empty() ? "Unknown" : status;
+}
+
+Result run_codex_mcp_cli(CodexState* state, const std::filesystem::path& working_directory,
+                         const std::vector<std::string>& arguments, std::string* output) {
+    return provider_mcp_run_cli(state->options.executable, arguments, working_directory, output);
+}
+
+Result read_codex_mcp_config(CodexState* state,
+                             const std::filesystem::path& working_directory,
+                             std::vector<McpServer>* servers) {
+    std::string output;
+    Result result = run_codex_mcp_cli(state, working_directory,
+                                      {"mcp", "list", "--json"}, &output);
+    if (result.status == ResultStatus::Error)
+        return result;
+
+    Json entries;
+    try {
+        entries = Json::parse(output);
+    } catch (...) {
+        return result_error("Codex returned invalid MCP server data");
+    }
+    if (!entries.is_array())
+        return result_error("Codex returned MCP server data in an unknown format");
+
+    servers->clear();
+    for (const Json& entry : entries) {
+        if (!entry.is_object())
+            continue;
+        McpServer server;
+        server.name = json_string(entry, "name");
+        if (server.name.empty())
+            continue;
+        server.enabled = !entry.contains("enabled") || !entry["enabled"].is_boolean() ||
+                         entry["enabled"].get<bool>();
+        const Json transport = entry.value("transport", Json::object());
+        const std::string type = json_string(transport, "type");
+        if (type == "stdio") {
+            server.transport = McpServerTransport::Stdio;
+            server.command = json_string(transport, "command");
+            if (transport.contains("args") && transport["args"].is_array()) {
+                for (const Json& argument : transport["args"])
+                    if (argument.is_string())
+                        server.arguments.push_back(argument.get<std::string>());
+            }
+            if (transport.contains("env") && transport["env"].is_object()) {
+                for (auto it = transport["env"].begin(); it != transport["env"].end(); ++it)
+                    if (it.value().is_string())
+                        server.environment.emplace(it.key(), it.value().get<std::string>());
+            }
+            if ((transport.contains("env_vars") && transport["env_vars"].is_array() &&
+                 !transport["env_vars"].empty()) ||
+                (transport.contains("cwd") && !transport["cwd"].is_null()))
+                server.editable = false;
+        } else if (type == "streamable_http" || type == "http") {
+            server.transport = McpServerTransport::Http;
+            server.url = json_string(transport, "url");
+            server.bearer_token_env_var = json_string(transport, "bearer_token_env_var");
+            if (transport.contains("http_headers") && transport["http_headers"].is_object()) {
+                for (auto it = transport["http_headers"].begin();
+                     it != transport["http_headers"].end(); ++it) {
+                    if (it.value().is_string())
+                        server.headers.emplace(it.key(), it.value().get<std::string>());
+                }
+            }
+            if (transport.contains("env_http_headers") &&
+                transport["env_http_headers"].is_object()) {
+                for (auto it = transport["env_http_headers"].begin();
+                     it != transport["env_http_headers"].end(); ++it) {
+                    if (it.value().is_string())
+                        server.headers.emplace(it.key(), "$" + it.value().get<std::string>());
+                }
+            }
+            if (!server.headers.empty())
+                server.editable = false;
+            if (transport.contains("http_headers_helper") &&
+                !transport["http_headers_helper"].is_null())
+                server.editable = false;
+        } else {
+            server.editable = false;
+            server.status_detail = "This transport is not editable in Zenith.";
+        }
+        if ((entry.contains("startup_timeout_sec") &&
+             !entry["startup_timeout_sec"].is_null()) ||
+            (entry.contains("tool_timeout_sec") && !entry["tool_timeout_sec"].is_null()) ||
+            (entry.contains("oauth") && !entry["oauth"].is_null()))
+            server.editable = false;
+        if (!server.editable && server.status_detail.empty())
+            server.status_detail = "Edit this server in the Codex configuration.";
+        if (!server.enabled) {
+            server.status = "Disabled";
+            server.editable = false;
+        } else {
+            server.status = "Checking";
+        }
+        servers->push_back(std::move(server));
+    }
+    return result_ok();
+}
+
+Result query_codex_mcp_status(CodexState* state,
+                              const std::filesystem::path& working_directory,
+                              std::map<std::string, std::pair<std::string, std::string>>* statuses) {
+    ChildProcess process;
+    Result started = start_codex_process(&state->options, &process, working_directory);
+    if (started.status == ResultStatus::Error) {
+        child_process_stop(&process);
+        return started;
+    }
+
+    std::string error;
+    Json response;
+    std::packaged_task<bool()> status_request([&process, &error, &response] {
+        TurnRequest request;
+        StreamContext stream{nullptr, &request, false, false, {}};
+        return write_message(process.input, Json{
+            {"method", "initialize"}, {"id", 1},
+            {"params", {{"clientInfo", {{"name", "Zenith"}, {"title", "Zenith"},
+                                          {"version", "0.1.0"}}}}},
+        }) && wait_for_response(&process, 1, &stream, nullptr, &error) &&
+            write_message(process.input,
+                          Json{{"method", "initialized"}, {"params", Json::object()}}) &&
+            write_message(process.input, Json{{"method", "mcpServerStatus/list"}, {"id", 2},
+                                             {"params", Json::object()}}) &&
+            wait_for_response(&process, 2, &stream, &response, &error);
+    });
+    std::future<bool> status_future = status_request.get_future();
+    std::thread status_thread(std::move(status_request));
+    const bool timed_out = status_future.wait_for(std::chrono::seconds(30)) !=
+                           std::future_status::ready;
+    if (timed_out)
+        child_process_terminate(&process);
+    const bool success = timed_out ? false : status_future.get();
+    status_thread.join();
+    child_process_stop(&process);
+    if (timed_out)
+        return result_error("Codex MCP status check timed out");
+    if (!success)
+        return result_error(error.empty() ? "Codex MCP status request failed" : error);
+
+    const Json data = response.value("result", Json::object()).value("data", Json::array());
+    if (!data.is_array())
+        return result_error("Codex returned MCP status data in an unknown format");
+    for (const Json& entry : data) {
+        if (!entry.is_object())
+            continue;
+        const std::string name = json_string(entry, "name");
+        if (name.empty())
+            continue;
+        std::string status = json_string(entry, "connectionStatus");
+        if (status.empty())
+            status = json_string(entry, "status");
+        std::string detail = json_string(entry, "toolsError");
+        if (detail.empty())
+            detail = json_string(entry, "error");
+        statuses->emplace(name, std::make_pair(mcp_status_text(std::move(status)),
+                                               std::move(detail)));
+    }
+    return result_ok();
+}
+
+Result list_codex_mcp_servers(Provider* provider,
+                             const std::filesystem::path& working_directory,
+                             std::vector<McpServer>* servers) {
+    CodexState* state = static_cast<CodexState*>(provider->state);
+    Result result = read_codex_mcp_config(state, working_directory, servers);
+    if (result.status == ResultStatus::Error)
+        return result;
+
+    std::map<std::string, std::pair<std::string, std::string>> statuses;
+    Result status_result = query_codex_mcp_status(state, working_directory, &statuses);
+    for (McpServer& server : *servers) {
+        if (!server.enabled)
+            continue;
+        const auto status = statuses.find(server.name);
+        if (status_result.status == ResultStatus::Error) {
+            server.status = "Unknown";
+            server.status_detail = status_result.error;
+        } else if (status != statuses.end()) {
+            server.status = status->second.first;
+            server.status_detail = status->second.second;
+        } else {
+            server.status = "Not started";
+        }
+    }
+    return result_ok();
+}
+
+std::vector<std::string> codex_add_arguments(const McpServer& server) {
+    std::vector<std::string> arguments = {"mcp", "add"};
+    if (server.transport == McpServerTransport::Http) {
+        arguments.push_back(server.name);
+        arguments.push_back("--url");
+        arguments.push_back(server.url);
+        if (!server.bearer_token_env_var.empty()) {
+            arguments.push_back("--bearer-token-env-var");
+            arguments.push_back(server.bearer_token_env_var);
+        }
+    } else {
+        for (const auto& [key, value] : server.environment) {
+            arguments.push_back("--env");
+            arguments.push_back(key + "=" + value);
+        }
+        arguments.push_back(server.name);
+        arguments.push_back("--");
+        arguments.push_back(server.command);
+        arguments.insert(arguments.end(), server.arguments.begin(), server.arguments.end());
+    }
+    return arguments;
+}
+
+Result remove_codex_mcp_server(CodexState* state,
+                               const std::filesystem::path& working_directory,
+                               std::string_view name) {
+    std::string output;
+    return run_codex_mcp_cli(state, working_directory,
+                             {"mcp", "remove", std::string(name)}, &output);
+}
+
+Result upsert_codex_mcp_server(Provider* provider,
+                              const std::filesystem::path& working_directory,
+                              std::string_view existing_name, const McpServer& server) {
+    CodexState* state = static_cast<CodexState*>(provider->state);
+    if (server.name.empty())
+        return result_error("Enter a server name");
+    if (server.transport == McpServerTransport::Stdio && server.command.empty())
+        return result_error("Enter a command for the local server");
+    if (server.transport == McpServerTransport::Http && server.url.empty())
+        return result_error("Enter a URL for the HTTP server");
+    if (!server.headers.empty())
+        return result_error("Codex CLI cannot save custom HTTP headers through its MCP commands");
+
+    std::vector<McpServer> configured;
+    Result listed = read_codex_mcp_config(state, working_directory, &configured);
+    if (listed.status == ResultStatus::Error)
+        return listed;
+    const std::string old_name = existing_name.empty() ? server.name : std::string(existing_name);
+    const auto old_server = std::find_if(configured.begin(), configured.end(),
+        [&old_name](const McpServer& value) { return value.name == old_name; });
+    if (existing_name.empty() && old_server != configured.end())
+        return result_error("A Codex MCP server already uses that name");
+
+    const bool replacing = old_server != configured.end();
+    const McpServer old_definition = replacing ? *old_server : McpServer{};
+    if (replacing) {
+        Result removed = remove_codex_mcp_server(state, working_directory, old_name);
+        if (removed.status == ResultStatus::Error)
+            return removed;
+    }
+
+    std::string output;
+    Result added = run_codex_mcp_cli(state, working_directory,
+                                     codex_add_arguments(server), &output);
+    if (added.status == ResultStatus::Error && replacing) {
+        std::string restore_output;
+        run_codex_mcp_cli(state, working_directory, codex_add_arguments(old_definition),
+                          &restore_output);
+    }
+    return added;
+}
+
+Result remove_codex_mcp(Provider* provider,
+                        const std::filesystem::path& working_directory,
+                        std::string_view name) {
+    return remove_codex_mcp_server(static_cast<CodexState*>(provider->state),
+                                   working_directory, name);
+}
+
+
 void initialize_codex(void* context, ProviderRuntime* runtime) {
     CodexState* state = static_cast<CodexState*>(context);
     ProviderAvailability availability = ProviderAvailability::Unavailable;
@@ -748,7 +1053,6 @@ void initialize_codex(void* context, ProviderRuntime* runtime) {
     if (state->options.execute == nullptr) {
         location = child_process_resolve_executable(state->options.executable);
         if (!location.empty()) {
-            state->options.executable = location;
             models = fetch_codex_models(state, runtime, &availability);
         }
     } else {
@@ -920,6 +1224,9 @@ Result start_codex(Provider* provider) {
         state->skills_worker = std::thread(run_codex_skills, state);
         provider->request_skills = request_codex_skills;
         provider->poll_skills = poll_codex_skills;
+        provider->list_mcp_servers = list_codex_mcp_servers;
+        provider->upsert_mcp_server = upsert_codex_mcp_server;
+        provider->remove_mcp_server = remove_codex_mcp;
     }
     return result_ok();
 }

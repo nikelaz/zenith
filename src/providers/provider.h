@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -130,6 +131,25 @@ struct TurnRequest {
 enum class ApprovalDecision { ApproveOnce, Deny };
 enum class ProviderAvailability { Unknown, Available, Unavailable };
 
+enum class McpServerTransport { Stdio, Http };
+
+struct McpServer {
+    std::string name;
+    McpServerTransport transport = McpServerTransport::Stdio;
+    std::string command;
+    std::vector<std::string> arguments;
+    std::map<std::string, std::string> environment;
+    std::string url;
+    std::string bearer_token_env_var;
+    std::map<std::string, std::string> headers;
+    std::string source;
+    std::string status = "Unknown";
+    std::string status_detail;
+    bool enabled = true;
+    bool editable = true;
+    bool removable = true;
+};
+
 struct Provider;
 using ProviderStartFn = Result (*)(Provider*);
 using ProviderSubmitFn = Result (*)(Provider*, TurnRequest);
@@ -140,6 +160,14 @@ using ProviderRequestUsageFn = void (*)(Provider*);
 using ProviderPollUsageFn = std::optional<UsageSnapshot> (*)(Provider*);
 using ProviderRequestSkillsFn = Result (*)(Provider*, const std::filesystem::path&, bool);
 using ProviderPollSkillsFn = std::vector<SkillDiscoverySnapshot> (*)(Provider*);
+using ProviderListMcpServersFn = Result (*)(Provider*, const std::filesystem::path&,
+                                           std::vector<McpServer>*);
+using ProviderUpsertMcpServerFn = Result (*)(Provider*, const std::filesystem::path&,
+                                             std::string_view, const McpServer&);
+using ProviderRemoveMcpServerFn = Result (*)(Provider*, const std::filesystem::path&,
+                                             std::string_view);
+using ProviderSetMcpEnabledFn = Result (*)(Provider*, const std::filesystem::path&,
+                                           std::string_view, bool);
 using ProviderDestroyFn = void (*)(Provider*);
 using ProviderEventSink = void (*)(void*, const Event*);
 
@@ -156,6 +184,10 @@ struct Provider {
     ProviderPollUsageFn poll_usage = nullptr;
     ProviderRequestSkillsFn request_skills = nullptr;
     ProviderPollSkillsFn poll_skills = nullptr;
+    ProviderListMcpServersFn list_mcp_servers = nullptr;
+    ProviderUpsertMcpServerFn upsert_mcp_server = nullptr;
+    ProviderRemoveMcpServerFn remove_mcp_server = nullptr;
+    ProviderSetMcpEnabledFn set_mcp_server_enabled = nullptr;
     std::vector<ModelOption> models{};
     std::string default_model{};
     ProviderAvailability availability = ProviderAvailability::Unknown;
