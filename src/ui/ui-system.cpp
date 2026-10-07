@@ -1407,6 +1407,7 @@ void UISystem::render_frame_to_backbuffer() {
             for (const UsageMetric& metric : snapshot.metrics) {
                 if (metric.name == "Plan" || metric.name == "Credits")
                     continue;
+                const bool is_copilot_credits = metric.name == "Monthly Credits";
                 const bool has_quota = metric.limit.has_value() &&
                     (metric.remaining.has_value() || metric.used.has_value());
                 std::string label = metric.name;
@@ -1421,11 +1422,13 @@ void UISystem::render_frame_to_backbuffer() {
                 std::string value = metric.value;
                 y += panel_size(14.0f);
                 if (has_quota) {
-                    const double remaining = metric.remaining.value_or(
-                        *metric.limit - metric.used.value_or(0.0));
+                    const double remaining = is_copilot_credits
+                        ? *metric.limit - metric.used.value_or(0.0)
+                        : metric.remaining.value_or(
+                              *metric.limit - metric.used.value_or(0.0));
                     const double fraction = *metric.limit > 0.0
                         ? std::clamp(remaining / *metric.limit, 0.0, 1.0) : 0.0;
-                    if (!metric.period.empty()) {
+                    if (is_copilot_credits || !metric.period.empty()) {
                         const int remaining_percent = static_cast<int>(
                             fraction * 100.0 + 0.5);
                         value = std::to_string(remaining_percent) + "% Left";
@@ -1452,6 +1455,18 @@ void UISystem::render_frame_to_backbuffer() {
                             std::min(radius, fill_width * 0.5f));
                     }
                     y += panel_size(24.0f);
+                    if (is_copilot_credits) {
+                        std::string credits_used = metric.value;
+                        const std::size_t used_suffix = credits_used.rfind(" Used");
+                        if (used_suffix != std::string::npos &&
+                            used_suffix + 5 == credits_used.size()) {
+                            credits_used.replace(used_suffix, 5, " Credits Used");
+                        }
+                        draw_text(credits_used.c_str(),
+                                  ImVec2(window_position.x + panel_size(10.0f), y),
+                                  label_color);
+                        y += line_height + panel_size(3.0f);
+                    }
                 } else if (!value.empty()) {
                     draw_text(label.c_str(), ImVec2(window_position.x + panel_size(10.0f), y),
                               label_color);

@@ -1,5 +1,6 @@
 #include "provider_runtime.h"
 #include "provider_mcp_utils.h"
+#include "usage-time.h"
 #include "../process/child-process.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -483,6 +484,10 @@ UsageSnapshot parse_copilot_usage(const Json& result) {
 
         UsageMetric metric;
         metric.name = copilot_quota_name(key);
+        const std::string reset_date = string_value(quota, "resetDate");
+        metric.reset_at = usage_time::format_iso8601_utc(reset_date);
+        if (metric.reset_at.empty())
+            metric.reset_at = reset_date;
         if (unlimited) {
             metric.value = "Unlimited allowance";
             metric.detail = quota_number(used) + " requests used this period.";

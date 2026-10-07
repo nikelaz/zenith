@@ -1,8 +1,8 @@
 #include "provider_runtime.h"
 #include "provider_mcp_utils.h"
+#include "usage-time.h"
 #include "../process/child-process.h"
 #include <nlohmann/json.hpp>
-#include <cstdio>
 #include <algorithm>
 #include <chrono>
 #include <cctype>
@@ -274,47 +274,11 @@ bool wait_for_response(ChildProcess* process, int request_id, StreamContext* str
 }
 
 std::string usage_reset_time(std::int64_t timestamp) {
-    const std::time_t value = static_cast<std::time_t>(timestamp);
-    std::tm time{};
-#ifdef _WIN32
-    if (gmtime_s(&time, &value) != 0)
-        return {};
-#else
-    if (gmtime_r(&value, &time) == nullptr)
-        return {};
-#endif
-    static const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    if (time.tm_mon < 0 || time.tm_mon >= 12)
-        return {};
-    const int hour = time.tm_hour % 12 == 0 ? 12 : time.tm_hour % 12;
-    char formatted[64];
-    std::snprintf(formatted, sizeof(formatted), "%s %d, %d at %d:%02d %s UTC",
-                  months[time.tm_mon], time.tm_mday, time.tm_year + 1900, hour,
-                  time.tm_min, time.tm_hour < 12 ? "AM" : "PM");
-    return formatted;
+    return usage_time::format_utc(static_cast<std::time_t>(timestamp));
 }
 
 std::string usage_update_time() {
-    const std::time_t value = std::time(nullptr);
-    std::tm time{};
-#ifdef _WIN32
-    if (gmtime_s(&time, &value) != 0)
-        return {};
-#else
-    if (gmtime_r(&value, &time) == nullptr)
-        return {};
-#endif
-    static const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-    if (time.tm_mon < 0 || time.tm_mon >= 12)
-        return {};
-    const int hour = time.tm_hour % 12 == 0 ? 12 : time.tm_hour % 12;
-    char formatted[64];
-    std::snprintf(formatted, sizeof(formatted), "%s %d, %d at %d:%02d %s UTC",
-                  months[time.tm_mon], time.tm_mday, time.tm_year + 1900, hour,
-                  time.tm_min, time.tm_hour < 12 ? "AM" : "PM");
-    return formatted;
+    return usage_time::format_utc(std::time(nullptr));
 }
 
 UsageSnapshot parse_codex_usage(const Json& result) {
