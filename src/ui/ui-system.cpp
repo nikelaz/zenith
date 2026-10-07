@@ -501,7 +501,10 @@ UISystem::UISystem(SDL_Window* window, SDL_GPUDevice* gpu_device,
                    ApplicationState& state, std::vector<ProviderPtr>& providers)
     : m_window(window), m_gpu_device(gpu_device), m_state(state), m_providers(providers),
       m_chat_panel_state(), m_usage_snapshots(providers.size()),
-      m_usage_loading(providers.size(), false), m_skill_snapshots(providers.size()),
+      m_usage_loading(providers.size(), false),
+      m_usage_rotation_angles(providers.size(), 0.0f),
+      m_usage_rotation_targets(providers.size(), 0.0f),
+      m_skill_snapshots(providers.size()),
       m_skill_requests(providers.size()), m_mcp_snapshots(providers.size()) {
     m_chat_panel_state.selected_model = providers.empty()
         ? std::string{} : providers.front()->default_model;
@@ -1264,6 +1267,14 @@ void UISystem::render_frame_to_backbuffer() {
             if (updated.has_value()) {
                 m_usage_snapshots[index] = std::move(updated);
                 m_usage_loading[index] = false;
+                constexpr float full_rotation = 6.28318530718f;
+                const float angle = m_usage_rotation_angles[index];
+                if (angle > 0.0f) {
+                    m_usage_rotation_targets[index] =
+                        std::ceil(angle / full_rotation) * full_rotation;
+                    if (m_usage_rotation_targets[index] <= angle)
+                        m_usage_rotation_targets[index] += full_rotation;
+                }
             }
         }
         if (provider->poll_skills != nullptr) {
@@ -1307,6 +1318,18 @@ void UISystem::render_frame_to_backbuffer() {
                     [](const UsageMetric& metric) { return metric.name == "Usage unavailable"; });
             if (!usage_supported || usage_unavailable)
                 continue;
+            const float rotation_step = ImGui::GetIO().DeltaTime * 5.0f;
+            if (m_usage_loading[index]) {
+                m_usage_rotation_angles[index] += rotation_step;
+            } else if (m_usage_rotation_angles[index] < m_usage_rotation_targets[index]) {
+                m_usage_rotation_angles[index] = std::min(
+                    m_usage_rotation_angles[index] + rotation_step,
+                    m_usage_rotation_targets[index]);
+                if (m_usage_rotation_angles[index] >= m_usage_rotation_targets[index]) {
+                    m_usage_rotation_angles[index] = 0.0f;
+                    m_usage_rotation_targets[index] = 0.0f;
+                }
+            }
             draw_list->AddRectFilled(ImVec2(window_position.x, y),
                                      ImVec2(window_position.x + panel_width, y + panel_size(26.0f)),
                                      IM_COL32(29, 29, 29, 255));
@@ -1315,6 +1338,53 @@ void UISystem::render_frame_to_backbuffer() {
             draw_text(provider_name.c_str(), ImVec2(window_position.x + panel_size(10.0f),
                                              y + (panel_size(26.0f) - line_height) * 0.5f),
                       IM_COL32(170, 170, 170, 255));
+            const ImVec2 refresh_button_size(panel_size(26.0f), panel_size(26.0f));
+            const ImVec2 refresh_button_position(
+                window_position.x + panel_width - refresh_button_size.x - panel_size(4.0f), y);
+            ImGui::SetCursorScreenPos(refresh_button_position);
+            ImGui::PushID(static_cast<int>(index));
+            const bool refresh_busy = m_usage_loading[index] ||
+                m_usage_rotation_angles[index] < m_usage_rotation_targets[index];
+            ImGui::BeginDisabled(refresh_busy);
+            const bool refresh_clicked = ImGui::InvisibleButton(
+                "##refresh_usage", refresh_button_size);
+            const bool refresh_hovered = ImGui::IsItemHovered();
+            ImGui::EndDisabled();
+            ImGui::PopID();
+            if (refresh_clicked) {
+                provider->request_usage(provider);
+                m_usage_loading[index] = true;
+                m_usage_rotation_targets[index] = 0.0f;
+            }
+            const bool refreshing_provider = m_usage_loading[index];
+            const float refresh_angle = m_usage_rotation_angles[index];
+            const ImVec2 refresh_center(
+                refresh_button_position.x + refresh_button_size.x * 0.5f,
+                refresh_button_position.y + refresh_button_size.y * 0.5f);
+            const float refresh_radius = panel_size(5.4f);
+            const float arc_start = refresh_angle + 0.65f;
+            const float arc_end = refresh_angle + 5.55f;
+            const ImU32 refresh_color = refresh_hovered && !refreshing_provider
+                ? IM_COL32(225, 225, 225, 255) : IM_COL32(150, 150, 150, 255);
+            draw_list->PathArcTo(refresh_center, refresh_radius, arc_start, arc_end, 24);
+            draw_list->PathStroke(refresh_color, 0, panel_size(1.53f));
+            const ImVec2 arrow_tip(
+                refresh_center.x + std::cos(arc_end) * refresh_radius,
+                refresh_center.y + std::sin(arc_end) * refresh_radius);
+            const ImVec2 arrow_direction(-std::sin(arc_end), std::cos(arc_end));
+            const ImVec2 arrow_normal(-arrow_direction.y, arrow_direction.x);
+            const float arrow_length = panel_size(3.6f);
+            const float arrow_half_width = panel_size(2.34f);
+            const ImVec2 arrow_base(
+                arrow_tip.x - arrow_direction.x * arrow_length,
+                arrow_tip.y - arrow_direction.y * arrow_length);
+            draw_list->AddTriangleFilled(
+                arrow_tip,
+                ImVec2(arrow_base.x + arrow_normal.x * arrow_half_width,
+                       arrow_base.y + arrow_normal.y * arrow_half_width),
+                ImVec2(arrow_base.x - arrow_normal.x * arrow_half_width,
+                       arrow_base.y - arrow_normal.y * arrow_half_width),
+                refresh_color);
             y += panel_size(26.0f);
             if (m_usage_loading[index] && !m_usage_snapshots[index].has_value()) {
                 draw_text("Loading usage information…",
@@ -1351,12 +1421,14 @@ void UISystem::render_frame_to_backbuffer() {
                 std::string value = metric.value;
                 y += panel_size(14.0f);
                 if (has_quota) {
-                    const double used = metric.used.value_or(
-                        *metric.limit - metric.remaining.value_or(0.0));
+                    const double remaining = metric.remaining.value_or(
+                        *metric.limit - metric.used.value_or(0.0));
                     const double fraction = *metric.limit > 0.0
-                        ? std::clamp(used / *metric.limit, 0.0, 1.0) : 0.0;
+                        ? std::clamp(remaining / *metric.limit, 0.0, 1.0) : 0.0;
                     if (!metric.period.empty()) {
-                        value = std::to_string(static_cast<int>(used + 0.5)) + "% Used";
+                        const int remaining_percent = static_cast<int>(
+                            fraction * 100.0 + 0.5);
+                        value = std::to_string(remaining_percent) + "% Left";
                     }
                     draw_text(label.c_str(), ImVec2(window_position.x + panel_size(10.0f), y),
                               label_color);
@@ -1371,10 +1443,14 @@ void UISystem::render_frame_to_backbuffer() {
                     const float radius = panel_size(6.0f);
                     draw_list->AddRectFilled(bar_min, bar_max, IM_COL32(29, 29, 29, 255),
                                               radius);
-                    draw_list->AddRectFilled(bar_min,
-                        ImVec2(bar_min.x + (bar_max.x - bar_min.x) *
-                            static_cast<float>(fraction), bar_max.y),
-                        IM_COL32(94, 94, 94, 255), radius);
+                    const float fill_width = (bar_max.x - bar_min.x) *
+                        static_cast<float>(fraction);
+                    if (fill_width > 0.0f) {
+                        draw_list->AddRectFilled(bar_min,
+                            ImVec2(bar_min.x + fill_width, bar_max.y),
+                            IM_COL32(94, 94, 94, 255),
+                            std::min(radius, fill_width * 0.5f));
+                    }
                     y += panel_size(24.0f);
                 } else if (!value.empty()) {
                     draw_text(label.c_str(), ImVec2(window_position.x + panel_size(10.0f), y),
@@ -1404,19 +1480,7 @@ void UISystem::render_frame_to_backbuffer() {
         draw_list->PopClipRect();
         ImGui::SetCursorScreenPos(ImVec2(window_position.x + ImGui::GetStyle().WindowPadding.x,
                                          y));
-        const bool refreshing = std::find(m_usage_loading.begin(), m_usage_loading.end(), true) !=
-                                m_usage_loading.end();
-        ImGui::BeginDisabled(refreshing);
-        if (ImGui::Button(refreshing ? "Refreshing..." : "Refresh")) {
-            for (std::size_t index = 0; index < m_providers.size(); ++index) {
-                Provider* provider = m_providers[index].get();
-                if (provider->request_usage != nullptr && provider->poll_usage != nullptr) {
-                    provider->request_usage(provider);
-                    m_usage_loading[index] = true;
-                }
-            }
-        }
-        ImGui::EndDisabled();
+        ImGui::Dummy(ImVec2(0.0f, panel_size(1.0f)));
         ImGui::End();
     }
 
@@ -1438,7 +1502,7 @@ void UISystem::render_mcp_panel() {
     if (!m_mcp_panel_open)
         return;
 
-    if (!ImGui::Begin("MCP Servers", &m_mcp_panel_open)) {
+    if (!ImGui::Begin("MCP Servers")) {
         ImGui::End();
         return;
     }
@@ -1463,7 +1527,8 @@ void UISystem::render_mcp_panel() {
 
     for (std::size_t index = 0; index < m_providers.size(); ++index) {
         Provider& provider = *m_providers[index];
-        if (provider.list_mcp_servers == nullptr)
+        if (provider.availability != ProviderAvailability::Available ||
+            provider.list_mcp_servers == nullptr)
             continue;
         const auto snapshot = m_mcp_snapshots[index].find(directory_key);
         if (snapshot == m_mcp_snapshots[index].end() || !snapshot->second.attempted) {
@@ -1494,6 +1559,8 @@ void UISystem::render_mcp_panel() {
     if (ImGui::BeginTabBar("##mcp_providers")) {
         for (std::size_t index = 0; index < m_providers.size(); ++index) {
             Provider& provider = *m_providers[index];
+            if (provider.availability != ProviderAvailability::Available)
+                continue;
             const std::string provider_name = provider_display_name(provider.name);
             if (!ImGui::BeginTabItem(provider_name.c_str()))
                 continue;
@@ -2140,6 +2207,8 @@ void UISystem::render_settings_contents() {
 
             for (std::size_t index = 0; index < m_providers.size(); ++index) {
                 Provider& provider = *m_providers[index];
+                if (provider.availability != ProviderAvailability::Available)
+                    continue;
                 ImGui::PushID(static_cast<int>(index));
                 const auto snapshot = m_skill_snapshots[index].find(directory_key);
                 if (provider.request_skills != nullptr &&

@@ -98,6 +98,8 @@ private:
         std::make_shared<FileDialogQueue>();
     std::vector<std::optional<UsageSnapshot>> m_usage_snapshots;
     std::vector<bool> m_usage_loading;
+    std::vector<float> m_usage_rotation_angles;
+    std::vector<float> m_usage_rotation_targets;
     std::vector<std::unordered_map<std::string, SkillDiscoverySnapshot>> m_skill_snapshots;
     std::vector<std::unordered_set<std::string>> m_skill_requests;
     std::vector<std::unordered_map<std::string, McpProviderSnapshot>> m_mcp_snapshots;

@@ -26,11 +26,11 @@ void render_dock_area() {
         ImGuiID mcp_id = 0;
         ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.25f, &threads_id, &main_id);
         ImGui::DockBuilderSplitNode(main_id, ImGuiDir_Right, 0.28f, &usage_id, &main_id);
-        ImGui::DockBuilderSplitNode(usage_id, ImGuiDir_Down, 0.46f, &mcp_id, &usage_id);
+        ImGui::DockBuilderSplitNode(usage_id, ImGuiDir_Down, 0.46f, &usage_id, &mcp_id);
         ImGui::DockBuilderDockWindow("Threads", threads_id);
         ImGui::DockBuilderDockWindow("Chat", main_id);
-        ImGui::DockBuilderDockWindow("Usage & Limits", usage_id);
-        ImGui::DockBuilderDockWindow("MCP Servers", mcp_id);
+        ImGui::DockBuilderDockWindow("Usage & Limits", mcp_id);
+        ImGui::DockBuilderDockWindow("MCP Servers", usage_id);
         ImGui::DockBuilderFinish(dockspace_id);
     }
 
