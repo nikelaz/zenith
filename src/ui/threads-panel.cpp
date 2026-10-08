@@ -148,6 +148,9 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
     const float horizontal_padding = ui_size(12.0f);
     const float vertical_padding = ui_size(9.0f);
     const float description_width = std::max(1.0f, width - horizontal_padding * 2.0f);
+    const std::string title = thread_title(project, thread_index);
+    const float title_height = ImGui::CalcTextSize(
+        title.c_str(), nullptr, false, description_width).y;
     ImFont* description_font = ImGui::GetFont();
     ImGui::PushFont(description_font, style.FontSizeBase * 0.9f);
     const float description_height = thread.description.empty()
@@ -155,7 +158,7 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
         : ImGui::CalcTextSize(thread.description.c_str(), nullptr, false, description_width).y;
     ImGui::PopFont();
     const float description_spacing = thread.description.empty() ? 0.0f : style.ItemSpacing.y;
-    const float card_height = vertical_padding * 2.0f + ImGui::GetTextLineHeight() +
+    const float card_height = vertical_padding * 2.0f + title_height +
                               description_spacing + description_height;
     const ImVec2 card_min = ImGui::GetCursorScreenPos();
     const ImVec2 card_max(card_min.x + width, card_min.y + card_height);
@@ -218,10 +221,12 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
                                               : ImVec4(0.48f, 0.48f, 0.48f, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_Text, title_color);
     ImGui::SetCursorScreenPos(ImVec2(text_x, title_y));
-    ImGui::TextUnformatted(thread_title(project, thread_index).c_str());
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + description_width);
+    ImGui::TextUnformatted(title.c_str());
+    ImGui::PopTextWrapPos();
     if (!thread.description.empty()) {
         ImGui::SetCursorScreenPos(
-            ImVec2(text_x, title_y + ImGui::GetTextLineHeight() + description_spacing));
+            ImVec2(text_x, title_y + title_height + description_spacing));
         ImGui::PushFont(description_font, style.FontSizeBase * 0.9f);
         ImGui::PushStyleColor(ImGuiCol_Text, description_color);
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + description_width);

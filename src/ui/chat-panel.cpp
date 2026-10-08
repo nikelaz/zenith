@@ -386,6 +386,7 @@ std::string display_language(const std::string& language) {
 class ChatMarkdown : public imgui_md {
 public:
     ImFont* monospace_font = nullptr;
+    int code_card_index = 0;
 
     ImVec4 get_color() const override {
         return m_href.empty() ? ImGui::GetStyle().Colors[ImGuiCol_Text]
@@ -413,6 +414,7 @@ protected:
             ImVec2 position = ImGui::GetCursorScreenPos();
             position.y -= ImGui::GetStyle().ItemSpacing.y;
             ImGui::SetCursorScreenPos(position);
+            ImGui::Dummy(ImVec2(0.0f, 0.0f));
         }
     }
 
@@ -426,7 +428,10 @@ protected:
             if (!code.empty() && code.back() == '\n')
                 code.pop_back();
             begin_chat_component();
+            // Each fenced block owns a separate child window and scroll state.
+            ImGui::PushID(code_card_index++);
             render_code_card(code, language, monospace_font);
+            ImGui::PopID();
         }
     }
 
@@ -1739,6 +1744,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         const ImVec2 messages_max(messages_min.x + messages_size.x,
                                   messages_min.y + messages_size.y);
         transcript_selection.spans.clear();
+        markdown.code_card_index = 0;
         has_chat_component = false;
         const bool was_at_bottom = ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 1.0f;
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
