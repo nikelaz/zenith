@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-constexpr std::size_t maximum_clipboard_image_bytes = 32 * 1024 * 1024;
+constexpr std::size_t kMaximumClipboardImageBytes = 32 * 1024 * 1024;
 
 struct ClipboardImage {
     std::vector<std::uint8_t> content;

@@ -1,43 +1,14 @@
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <shlobj.h>
-#endif
 #include "application.h"
+#include "base/os.h"
 #include "base/result.h"
+#include "platform/application-paths.h"
 #include "platform/message-box.h"
 #include <cmath>
 #include <filesystem>
 #include <string>
-#include <system_error>
 
 constexpr int kWindowWidth = 1280;
 constexpr int kWindowHeight = 720;
-
-namespace {
-Result application_database_path(std::filesystem::path* path) {
-#ifdef _WIN32
-    PWSTR local_app_data = nullptr;
-    const HRESULT result = SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE,
-                                                nullptr, &local_app_data);
-    if (FAILED(result) || local_app_data == nullptr)
-        return result_error("Failed to locate the local application data folder");
-    const std::filesystem::path directory =
-        std::filesystem::path(local_app_data) / L"Zenith";
-    CoTaskMemFree(local_app_data);
-    std::error_code error;
-    std::filesystem::create_directories(directory, error);
-    if (error)
-        return result_error("Failed to create the Zenith data folder: " + error.message());
-    *path = directory / L"Zenith.sqlite3";
-#else
-    *path = "Zenith.sqlite3";
-#endif
-    return result_ok();
-}
-}
 
 Application::~Application() {
     deinit();
@@ -150,7 +121,7 @@ Result Application::window_init() {
 
     int window_width = kWindowWidth;
     int window_height = kWindowHeight;
-#ifdef _WIN32
+#if OS_WIN
     const SDL_DisplayID primary_display = SDL_GetPrimaryDisplay();
     if (primary_display == 0) {
         const std::string error = SDL_GetError();

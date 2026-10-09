@@ -1,4 +1,5 @@
-#ifdef _WIN32
+#include "../base/os.h"
+#if OS_WIN
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -33,7 +34,7 @@
 #include <system_error>
 #include <vector>
 
-#ifdef __APPLE__
+#if OS_MAC
 #include <mach-o/dyld.h>
 #endif
 
@@ -241,7 +242,7 @@ void update_thread_metadata_model(ApplicationState& state,
 }
 
 std::filesystem::path executable_directory() {
-#ifdef _WIN32
+#if OS_WIN
     std::wstring executable(32768, L'\0');
     const DWORD length = GetModuleFileNameW(nullptr, executable.data(),
                                             static_cast<DWORD>(executable.size()));
@@ -250,14 +251,14 @@ std::filesystem::path executable_directory() {
         return std::filesystem::path(executable).parent_path();
     }
     return std::filesystem::current_path();
-#elif defined(__APPLE__)
+#elif OS_MAC
     uint32_t length = 0;
     _NSGetExecutablePath(nullptr, &length);
     std::vector<char> executable(length);
     if (length > 0 && _NSGetExecutablePath(executable.data(), &length) == 0)
         return std::filesystem::path(executable.data()).parent_path();
     return std::filesystem::current_path();
-#elif defined(__linux__)
+#elif OS_LINUX
     std::error_code error;
     const std::filesystem::path executable = std::filesystem::read_symlink(
         "/proc/self/exe", error);
@@ -270,7 +271,7 @@ std::filesystem::path executable_directory() {
 std::filesystem::path bundled_font_path(const char* family, const char* filename) {
     const std::filesystem::path binary_directory = executable_directory();
     std::vector<std::filesystem::path> font_directories;
-#ifdef __APPLE__
+#if OS_MAC
     font_directories.push_back(binary_directory.parent_path() / "Resources" / "fonts");
 #endif
     font_directories.push_back(binary_directory / "assets" / "fonts");

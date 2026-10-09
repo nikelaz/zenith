@@ -1,6 +1,7 @@
 #include "provider_runtime.h"
 #include "provider_mcp_utils.h"
 #include "usage-time.h"
+#include "../base/os.h"
 #include "../process/child-process.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -22,7 +23,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
-#ifdef _WIN32
+#if OS_WIN
 #include <fcntl.h>
 #include <io.h>
 #endif
@@ -100,7 +101,7 @@ struct StreamContext {
 std::string utc_timestamp() {
     const std::time_t now = std::time(nullptr);
     std::tm utc{};
-#ifdef _WIN32
+#if OS_WIN
     gmtime_s(&utc, &now);
 #else
     gmtime_r(&now, &utc);
@@ -616,7 +617,7 @@ bool fetch_copilot_usage(CopilotState* state, UsageSnapshot* snapshot,
         child_process_stop(&process);
         return false;
     }
-#ifdef _WIN32
+#if OS_WIN
     _setmode(_fileno(process.input), _O_BINARY);
     _setmode(_fileno(process.output), _O_BINARY);
 #endif

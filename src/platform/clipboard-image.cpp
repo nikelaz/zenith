@@ -37,7 +37,7 @@ Result read_clipboard_image(ClipboardImage* image) {
         SDL_GetClipboardData(format->media_type, &size));
     if (content == nullptr)
         return result_error(std::string("Could not read the clipboard image: ") + SDL_GetError());
-    if (size == 0 || size > maximum_clipboard_image_bytes) {
+    if (size == 0 || size > kMaximumClipboardImageBytes) {
         SDL_free(content);
         return result_error(size == 0
             ? "The clipboard image is empty."

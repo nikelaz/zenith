@@ -1,6 +1,8 @@
 #ifndef USAGE_TIME_H
 #define USAGE_TIME_H
 
+#include "../base/os.h"
+
 #include <chrono>
 #include <cstdio>
 #include <ctime>
@@ -10,7 +12,7 @@
 namespace usage_time {
 inline std::string format_utc(std::time_t value) {
     std::tm time{};
-#ifdef _WIN32
+#if OS_WIN
     if (gmtime_s(&time, &value) != 0)
         return {};
 #else

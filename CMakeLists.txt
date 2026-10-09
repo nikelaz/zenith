@@ -69,6 +69,7 @@ add_executable(Zenith
     src/base/result.cpp
     ${CHILD_PROCESS_SOURCE}
     src/platform/clipboard-image.cpp
+    src/platform/application-paths.cpp
     src/platform/file-dialogs.cpp
     src/platform/message-box.cpp
     src/providers/provider_runtime.cpp
