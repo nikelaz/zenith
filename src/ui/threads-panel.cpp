@@ -1,5 +1,6 @@
 #include "threads-panel.h"
 #include "../platform/message-box.h"
+#include "button.h"
 #include "imgui.h"
 #include "ui-scale.h"
 #include <algorithm>
@@ -289,8 +290,7 @@ void render_threads_panel(ApplicationState& state,
     if (new_project_x >= ImGui::GetCursorPosX() + ImGui::CalcTextSize("Projects").x +
                              style.ItemSpacing.x)
         ImGui::SameLine(new_project_x);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui_size(6.0f));
-    const bool open_project_clicked = ImGui::Button("##open-project",
+    const bool open_project_clicked = ui_button("##open-project",
         ImVec2(std::min(new_project_width, ImGui::GetContentRegionAvail().x), 0.0f));
     const ImVec2 button_min = ImGui::GetItemRectMin();
     const ImVec2 button_max = ImGui::GetItemRectMax();
@@ -306,7 +306,6 @@ void render_threads_panel(ApplicationState& state,
                            "Open Project");
     else if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Open Project");
-    ImGui::PopStyleVar();
     if (open_project_clicked)
         open_project(state, dialog_queue, window);
     ImGui::Spacing();
@@ -387,11 +386,10 @@ void render_threads_panel(ApplicationState& state,
         ImGui::SameLine(0.0f, action_gap);
         ImGui::SetCursorScreenPos(ImVec2(header_max.x + action_gap,
                                          header_min.y + (row_height - action_size) * 0.5f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui_size(5.6f));
         ImGui::PushStyleColor(ImGuiCol_Button, style.Colors[ImGuiCol_FrameBg]);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, style.Colors[ImGuiCol_HeaderHovered]);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, style.Colors[ImGuiCol_HeaderActive]);
-        const bool new_thread = ImGui::Button("##add-thread", ImVec2(action_size, action_size));
+        const bool new_thread = ui_button("##add-thread", ImVec2(action_size, action_size));
         const ImVec2 add_button_min = ImGui::GetItemRectMin();
         const ImVec2 add_button_max = ImGui::GetItemRectMax();
         const ImVec2 add_center(
@@ -407,7 +405,6 @@ void render_threads_panel(ApplicationState& state,
                            ImVec2(add_center.x, add_center.y + plus_half_size),
                            add_color, plus_thickness);
         ImGui::PopStyleColor(3);
-        ImGui::PopStyleVar();
         if (new_thread)
             add_thread(state, project_index);
 
@@ -439,9 +436,7 @@ void render_threads_panel(ApplicationState& state,
             ImGui::TextUnformatted("The project directory and its files will remain on disk.");
             ImGui::Spacing();
 
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui_size(6.0f));
-            const bool delete_project = ImGui::Button("Delete", ImVec2(ui_size(120.0f), 0.0f));
-            ImGui::PopStyleVar();
+            const bool delete_project = ui_button("Delete", ImVec2(ui_size(120.0f), 0.0f));
             if (delete_project) {
                 state.projects.erase(state.projects.begin() +
                                      static_cast<std::ptrdiff_t>(project_index));
@@ -458,9 +453,7 @@ void render_threads_panel(ApplicationState& state,
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui_size(6.0f));
-            const bool cancel_delete = ImGui::Button("Cancel", ImVec2(ui_size(120.0f), 0.0f));
-            ImGui::PopStyleVar();
+            const bool cancel_delete = ui_button("Cancel", ImVec2(ui_size(120.0f), 0.0f));
             if (cancel_delete) {
                 pending_project_delete.reset();
                 ImGui::CloseCurrentPopup();
@@ -486,9 +479,7 @@ void render_threads_panel(ApplicationState& state,
             ImGui::TextUnformatted("This cannot be undone.");
             ImGui::Spacing();
 
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui_size(6.0f));
-            const bool delete_thread = ImGui::Button("Delete", ImVec2(ui_size(120.0f), 0.0f));
-            ImGui::PopStyleVar();
+            const bool delete_thread = ui_button("Delete", ImVec2(ui_size(120.0f), 0.0f));
             if (delete_thread) {
                 project.threads.erase(project.threads.begin() +
                                       static_cast<std::ptrdiff_t>(thread_index));
@@ -505,9 +496,7 @@ void render_threads_panel(ApplicationState& state,
                 ImGui::CloseCurrentPopup();
             }
             ImGui::SameLine();
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui_size(6.0f));
-            const bool cancel_delete = ImGui::Button("Cancel", ImVec2(ui_size(120.0f), 0.0f));
-            ImGui::PopStyleVar();
+            const bool cancel_delete = ui_button("Cancel", ImVec2(ui_size(120.0f), 0.0f));
             if (cancel_delete) {
                 pending_delete.reset();
                 ImGui::CloseCurrentPopup();

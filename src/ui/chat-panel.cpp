@@ -1,5 +1,6 @@
 #include "chat-panel.h"
 #include "../platform/clipboard-image.h"
+#include "button.h"
 #include "imgui.h"
 #include "ui-scale.h"
 #include "imgui_internal.h"
@@ -2145,7 +2146,7 @@ void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& provid
         }
         const ImVec2 attach_pos(send_pos.x - ui_size(42.0f), selector_y);
         ImGui::SetCursorScreenPos(attach_pos);
-        const bool attach_clicked = ImGui::Button("##attach-files",
+        const bool attach_clicked = ui_button("##attach-files",
                                                    ImVec2(ui_size(30.0f), ImGui::GetFrameHeight()));
         const ImVec2 attach_min = ImGui::GetItemRectMin();
         const ImVec2 attach_max = ImGui::GetItemRectMax();

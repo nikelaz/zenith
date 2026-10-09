@@ -6,6 +6,7 @@
 #endif
 #include "ui-system.h"
 #include "ui-scale.h"
+#include "button.h"
 #include "card.h"
 #include "application-icon.h"
 #include "file-attachment-icon.h"
@@ -20,6 +21,7 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cfloat>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
@@ -112,11 +114,18 @@ std::string provider_display_name(std::string_view name) {
 }
 
 ImVec4 mcp_status_color(const std::string& status) {
-    if (status == "Connected")
-        return ImVec4(0.42f, 0.78f, 0.50f, 1.0f);
-    if (status == "Failed" || status == "Authentication required")
-        return ImVec4(0.90f, 0.38f, 0.34f, 1.0f);
-    if (status == "Disabled")
+    std::string normalized = status;
+    std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+        [](unsigned char character) {
+            return static_cast<char>(std::tolower(character));
+        });
+    if (normalized == "connected" || normalized == "ready" ||
+        normalized == "running" || normalized == "ok")
+        return ImVec4(0.66f, 0.84f, 0.68f, 1.0f);
+    if (normalized == "failed" || normalized == "error" ||
+        normalized == "authentication required")
+        return ImVec4(0.94f, 0.54f, 0.46f, 1.0f);
+    if (normalized == "disabled")
         return ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
     return ImVec4(0.90f, 0.68f, 0.32f, 1.0f);
 }
@@ -1589,7 +1598,7 @@ void UISystem::render_mcp_panel() {
             ImGui::Spacing();
 
             ImGui::BeginDisabled(snapshot.loading || provider.list_mcp_servers == nullptr);
-            if (ImGui::Button(snapshot.loading ? "Checking..." : "Refresh status")) {
+            if (ui_button(snapshot.loading ? "Checking..." : "Refresh status")) {
                 McpTask task;
                 task.kind = McpTaskKind::Refresh;
                 task.provider_index = index;
@@ -1599,7 +1608,7 @@ void UISystem::render_mcp_panel() {
             ImGui::EndDisabled();
             ImGui::SameLine();
             ImGui::BeginDisabled(snapshot.loading || provider.upsert_mcp_server == nullptr);
-            if (ImGui::Button("Add MCP server"))
+            if (ui_button("Add MCP server"))
                 open_server_dialog(index, nullptr, false, {});
             ImGui::EndDisabled();
 
@@ -1658,12 +1667,12 @@ void UISystem::render_mcp_panel() {
                 ImGui::PushID(server.name.c_str());
                 if (begin_ui_card("##mcp_server")) {
                     ImGui::TextWrapped("%s", displayed_server.name.c_str());
-                    ImGui::SameLine();
                     ImGui::TextColored(mcp_status_color(status), "%s", status.c_str());
-                    if (!displayed_server.source.empty())
-                        ImGui::TextDisabled("Source: %s", displayed_server.source.c_str());
                     if (displayed_server.transport == McpServerTransport::Stdio) {
-                        ImGui::TextWrapped("Local · %s", displayed_server.command.c_str());
+                        if (displayed_server.command.empty())
+                            ImGui::TextUnformatted("Local");
+                        else
+                            ImGui::TextWrapped("Local · %s", displayed_server.command.c_str());
                         if (!displayed_server.arguments.empty()) {
                             const std::string arguments =
                                 mcp_arguments_text(displayed_server.arguments);
@@ -1673,7 +1682,10 @@ void UISystem::render_mcp_panel() {
                             ImGui::TextDisabled("%zu environment variable(s)",
                                                 displayed_server.environment.size());
                     } else {
-                        ImGui::TextWrapped("HTTP · %s", displayed_server.url.c_str());
+                        if (displayed_server.url.empty())
+                            ImGui::TextUnformatted("HTTP");
+                        else
+                            ImGui::TextWrapped("HTTP · %s", displayed_server.url.c_str());
                         if (!displayed_server.bearer_token_env_var.empty())
                             ImGui::TextDisabled("Bearer token: %s",
                                 displayed_server.bearer_token_env_var.c_str());
@@ -1705,18 +1717,18 @@ void UISystem::render_mcp_panel() {
                     const bool controls_disabled = snapshot.loading;
                     if (optimistic_add && feedback != nullptr && !feedback->pending) {
                         ImGui::BeginDisabled(controls_disabled);
-                        if (ImGui::SmallButton("Edit"))
+                        if (ui_small_button("Edit"))
                             open_server_dialog(index, &feedback->server, false, {});
                         ImGui::EndDisabled();
                         ImGui::SameLine();
                         ImGui::BeginDisabled(controls_disabled);
-                        if (ImGui::SmallButton("Dismiss"))
+                        if (ui_small_button("Dismiss"))
                             dismissed_feedback.push_back(server.name);
                         ImGui::EndDisabled();
                     } else {
                         if (server.editable && provider.upsert_mcp_server != nullptr) {
                             ImGui::BeginDisabled(controls_disabled);
-                            if (ImGui::SmallButton("Edit")) {
+                            if (ui_small_button("Edit")) {
                                 const std::string existing_name =
                                     feedback != nullptr &&
                                     feedback->kind == McpTaskKind::Upsert
@@ -1730,7 +1742,7 @@ void UISystem::render_mcp_panel() {
                             if (server.editable || provider.upsert_mcp_server == nullptr)
                                 ImGui::SameLine();
                             ImGui::BeginDisabled(controls_disabled);
-                            if (ImGui::SmallButton("Remove")) {
+                            if (ui_small_button("Remove")) {
                                 m_mcp_delete_name = server.name;
                                 m_mcp_delete_provider = index;
                             }
@@ -1739,7 +1751,7 @@ void UISystem::render_mcp_panel() {
                         if (server.removable && provider.set_mcp_server_enabled != nullptr) {
                             ImGui::SameLine();
                             ImGui::BeginDisabled(controls_disabled);
-                            if (ImGui::SmallButton(displayed_server.enabled
+                            if (ui_small_button(displayed_server.enabled
                                     ? "Disable" : "Enable")) {
                                 McpTask task;
                                 task.kind = McpTaskKind::SetEnabled;
@@ -1837,7 +1849,7 @@ void UISystem::render_mcp_panel() {
                                m_mcp_dialog_error.c_str());
         }
         ImGui::Spacing();
-        if (ImGui::Button(editing ? "Save changes" : "Add server")) {
+        if (ui_button(editing ? "Save changes" : "Add server")) {
             m_mcp_dialog_error.clear();
             McpServer server = m_mcp_draft;
             std::string parse_error;
@@ -1889,7 +1901,7 @@ void UISystem::render_mcp_panel() {
             }
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel")) {
+        if (ui_button("Cancel")) {
             m_mcp_dialog_open = false;
             m_mcp_dialog_error.clear();
             ImGui::CloseCurrentPopup();
@@ -1903,7 +1915,7 @@ void UISystem::render_mcp_panel() {
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextWrapped("Remove '%s' from this provider's MCP configuration?",
                            m_mcp_delete_name.c_str());
-        if (ImGui::Button("Remove server")) {
+        if (ui_button("Remove server")) {
             McpTask task;
             task.kind = McpTaskKind::Remove;
             task.provider_index = m_mcp_delete_provider;
@@ -1914,7 +1926,7 @@ void UISystem::render_mcp_panel() {
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
-        if (ImGui::Button("Cancel removal")) {
+        if (ui_button("Cancel removal")) {
             m_mcp_delete_name.clear();
             ImGui::CloseCurrentPopup();
         }
@@ -2116,7 +2128,7 @@ void UISystem::render_settings_contents() {
                            ImGuiSliderFlags_AlwaysClamp);
         m_appearance_edit_active |= ImGui::IsItemActive();
         ImGui::Spacing();
-        if (ImGui::Button("Reset to defaults")) {
+        if (ui_button("Reset to defaults")) {
             m_state.base_font_size = 16;
             m_state.ui_scale = 1.0f;
         }
@@ -2248,7 +2260,7 @@ void UISystem::render_settings_contents() {
                         ImGui::SameLine();
                         if (loading) {
                             ImGui::TextDisabled("Discovering...");
-                        } else if (ImGui::SmallButton("Refresh")) {
+                        } else if (ui_small_button("Refresh")) {
                             request_discovery(index, true);
                         }
 
@@ -2292,7 +2304,7 @@ void UISystem::render_settings_contents() {
                                 if (!entry.path.empty()) {
                                     const std::string skill_path_text = path_utf8(entry.path);
                                     ImGui::TextWrapped("%s", skill_path_text.c_str());
-                                    if (ImGui::SmallButton("Open skill file")) {
+                                    if (ui_small_button("Open skill file")) {
                                         const std::string url = skill_file_url(entry.path);
                                         if (url.empty() || !SDL_OpenURL(url.c_str())) {
                                             ImGui::SameLine();

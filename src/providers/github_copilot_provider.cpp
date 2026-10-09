@@ -1402,9 +1402,12 @@ McpServer parse_copilot_mcp_server(const Json& entry, const std::string& source_
     McpServer server;
     server.name = string_value(entry, "name");
     server.source = copilot_source(entry, source_hint);
-    const Json config = entry.value("config", entry.value("configuration", entry));
-    const Json transport = config.value("transport", Json::object());
-    const Json& definition = transport.is_object() ? transport : config;
+    Json config = entry.value("config", entry.value("configuration", entry));
+    if (!config.is_object())
+        config = entry;
+    const Json& definition = config.contains("transport") &&
+            config["transport"].is_object() && !config["transport"].empty()
+        ? config["transport"] : config;
     std::string type = string_value(config, "type");
     if (type.empty())
         type = string_value(config, "transport");
