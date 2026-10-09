@@ -10,19 +10,20 @@
 struct FileDialogCallbackData {
     std::shared_ptr<FileDialogQueue> queue;
     FileDialogPurpose purpose;
+    std::string conversation_id;
 };
 
-void queue_file_dialog_result(const std::shared_ptr<FileDialogQueue>& queue,
+static void queue_file_dialog_result(const std::shared_ptr<FileDialogQueue>& queue,
                               FileDialogResult result) {
     std::lock_guard lock(queue->mutex);
     queue->results.push_back(std::move(result));
 }
 
-void SDLCALL file_dialog_callback(void* userdata, const char* const* filelist, int) {
+static void SDLCALL file_dialog_callback(void* userdata, const char* const* filelist, int) {
     std::unique_ptr<FileDialogCallbackData> callback_data(
         static_cast<FileDialogCallbackData*>(userdata));
     const std::shared_ptr<FileDialogQueue>& queue = callback_data->queue;
-    FileDialogResult result{callback_data->purpose, {}, {}};
+    FileDialogResult result{callback_data->purpose, {}, {}, callback_data->conversation_id};
 
     if (filelist == nullptr) {
         result.error = SDL_GetError();
@@ -51,10 +52,10 @@ void SDLCALL file_dialog_callback(void* userdata, const char* const* filelist, i
 
 void show_file_dialog(const std::shared_ptr<FileDialogQueue>& queue,
                       FileDialogPurpose purpose, SDL_Window* window,
-                      const char* default_location) {
+                      const char* default_location, std::string conversation_id) {
     SDL_PropertiesID properties = SDL_CreateProperties();
     if (properties == 0) {
-        queue_file_dialog_result(queue, {purpose, {}, SDL_GetError()});
+        queue_file_dialog_result(queue, {purpose, {}, SDL_GetError(), conversation_id});
         return;
     }
 
@@ -71,11 +72,11 @@ void show_file_dialog(const std::shared_ptr<FileDialogQueue>& queue,
     if (!properties_set) {
         const std::string error = SDL_GetError();
         SDL_DestroyProperties(properties);
-        queue_file_dialog_result(queue, {purpose, {}, error});
+        queue_file_dialog_result(queue, {purpose, {}, error, conversation_id});
         return;
     }
 
-    auto* callback_data = new FileDialogCallbackData{queue, purpose};
+    auto* callback_data = new FileDialogCallbackData{queue, purpose, std::move(conversation_id)};
     SDL_ShowFileDialogWithProperties(
         purpose == FileDialogPurpose::OpenProject ? SDL_FILEDIALOG_OPENFOLDER
                                                   : SDL_FILEDIALOG_OPENFILE,

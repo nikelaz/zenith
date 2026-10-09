@@ -6,6 +6,7 @@
 #include <optional>
 
 #include "base/result.h"
+#include "conversation/conversation.h"
 #include "persistence/persistent-store.h"
 #include "providers/provider.h"
 #include "state/application-state.h"
@@ -26,6 +27,8 @@ private:
     bool m_quit_requested = false;
     SDL_GPUDevice* m_gpu_device = nullptr;
     ApplicationState m_state;
+    ConversationState m_conversations;
+    McpService m_mcp_service;
     PersistentStore m_state_store;
     WindowState m_window_state;
     std::vector<ProviderPtr> m_providers;

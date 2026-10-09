@@ -67,12 +67,14 @@ target_link_libraries(imgui_md PUBLIC imgui md4c)
 add_executable(Zenith
     src/main.cpp
     src/base/result.cpp
+    src/conversation/conversation.cpp
     ${CHILD_PROCESS_SOURCE}
     src/platform/clipboard-image.cpp
     src/platform/application-paths.cpp
     src/platform/file-dialogs.cpp
     src/platform/message-box.cpp
     src/providers/provider_runtime.cpp
+    src/providers/mcp-service.cpp
     src/providers/provider_mcp_utils.cpp
     src/providers/codex_provider.cpp
     src/providers/github_copilot_provider.cpp
@@ -128,14 +130,15 @@ set_project_warnings(Zenith)
 
 include(CTest)
 if(BUILD_TESTING)
-    add_executable(tests tests/provider_tests.cpp src/base/result.cpp ${CHILD_PROCESS_SOURCE} src/providers/provider_runtime.cpp src/providers/provider_mcp_utils.cpp src/providers/codex_provider.cpp src/providers/github_copilot_provider.cpp src/providers/fake_provider.cpp src/persistence/persistent-store.cpp)
+    add_executable(tests tests/provider_tests.cpp tests/conversation_tests.cpp src/conversation/conversation.cpp src/base/result.cpp ${CHILD_PROCESS_SOURCE} src/providers/provider_runtime.cpp src/providers/mcp-service.cpp src/providers/provider_mcp_utils.cpp src/providers/codex_provider.cpp src/providers/github_copilot_provider.cpp src/providers/fake_provider.cpp src/persistence/persistent-store.cpp)
     target_include_directories(tests PRIVATE third_party/json/include third_party/sqlite3)
     target_link_libraries(tests PRIVATE GTest::gtest_main SQLite3)
     set_project_warnings(tests)
     include(GoogleTest)
     gtest_discover_tests(tests)
     add_executable(chat_render_tests tests/chat_render_tests.cpp
-        src/base/result.cpp src/platform/clipboard-image.cpp src/platform/file-dialogs.cpp)
+        src/base/result.cpp src/conversation/conversation.cpp src/platform/clipboard-image.cpp src/platform/file-dialogs.cpp)
+    target_include_directories(chat_render_tests PRIVATE third_party/json/include)
     target_link_libraries(chat_render_tests PRIVATE GTest::gtest_main imgui_md)
     if(WIN32)
         target_link_libraries(chat_render_tests PRIVATE gdiplus ole32 shell32)

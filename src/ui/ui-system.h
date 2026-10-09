@@ -4,17 +4,15 @@
 #include "../base/result.h"
 #include "../platform/file-dialogs.h"
 #include "../providers/provider.h"
+#include "../providers/mcp-service.h"
 #include "../state/application-state.h"
 #include "chat-panel.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 #include <memory>
-#include <condition_variable>
 #include <deque>
-#include <mutex>
 #include <optional>
 #include <string>
-#include <thread>
 #include <vector>
 #include <unordered_map>
 #include <unordered_set>
@@ -24,21 +22,6 @@ struct ImFont;
 
 class UISystem {
 private:
-    struct PendingThreadMetadata {
-        std::string thread_id;
-        std::string response;
-    };
-
-    enum class McpTaskKind { Refresh, Upsert, Remove, SetEnabled };
-    struct McpTask {
-        McpTaskKind kind = McpTaskKind::Refresh;
-        std::size_t provider_index = 0;
-        std::filesystem::path working_directory;
-        std::string existing_name;
-        std::string name;
-        McpServer server;
-        bool enabled = true;
-    };
     struct McpOperationFeedback {
         McpTaskKind kind = McpTaskKind::Refresh;
         std::string existing_name;
@@ -47,16 +30,6 @@ private:
         bool pending = true;
         bool saved = false;
         std::string error;
-    };
-    struct McpTaskResult {
-        McpTaskKind kind = McpTaskKind::Refresh;
-        std::size_t provider_index = 0;
-        std::filesystem::path working_directory;
-        std::string feedback_key;
-        std::vector<McpServer> servers;
-        std::string operation_error;
-        std::string list_error;
-        bool list_succeeded = false;
     };
     struct McpProviderSnapshot {
         std::vector<McpServer> servers;
@@ -91,24 +64,24 @@ private:
     ApplicationState& m_state;
     std::vector<ProviderPtr>& m_providers;
     ChatPanelState m_chat_panel_state;
+    ChatRenderResources m_chat_resources;
+    ChatRenderContext m_chat_render;
     std::unordered_map<std::string, ChatPanelState> m_thread_panels;
-    std::unordered_map<TurnId, PendingThreadMetadata> m_pending_thread_metadata;
-    TurnId m_next_turn_id = 1;
+    std::size_t m_known_thread_count = 0;
+    ConversationState& m_conversations;
     std::shared_ptr<FileDialogQueue> m_file_dialog_queue =
         std::make_shared<FileDialogQueue>();
-    std::vector<std::optional<UsageSnapshot>> m_usage_snapshots;
-    std::vector<bool> m_usage_loading;
-    std::vector<float> m_usage_rotation_angles;
-    std::vector<float> m_usage_rotation_targets;
-    std::vector<std::unordered_map<std::string, SkillDiscoverySnapshot>> m_skill_snapshots;
-    std::vector<std::unordered_set<std::string>> m_skill_requests;
-    std::vector<std::unordered_map<std::string, McpProviderSnapshot>> m_mcp_snapshots;
-    std::mutex m_mcp_mutex;
-    std::condition_variable m_mcp_ready;
-    std::deque<McpTask> m_mcp_tasks;
-    std::deque<McpTaskResult> m_mcp_results;
-    std::thread m_mcp_worker;
-    bool m_mcp_worker_stopping = false;
+    struct ProviderViewState {
+        std::optional<UsageSnapshot> usage_snapshot;
+        bool usage_loading = false;
+        float usage_rotation_angle = 0.0f;
+        float usage_rotation_target = 0.0f;
+        std::unordered_map<std::string, SkillDiscoverySnapshot> skill_snapshots;
+        std::unordered_set<std::string> skill_requests;
+        std::unordered_map<std::string, McpProviderSnapshot> mcp_snapshots;
+    };
+    std::vector<ProviderViewState> m_provider_views;
+    McpService& m_mcp_service;
     bool m_mcp_dialog_open = false;
     std::size_t m_mcp_dialog_provider = 0;
     std::string m_mcp_edit_existing_name;
@@ -129,7 +102,6 @@ private:
     void render_settings_window();
     void render_settings_contents();
     void apply_appearance_settings();
-    void mcp_worker_loop();
     void queue_mcp_task(McpTask task, bool explicit_refresh = false);
     void update_mcp_results();
     void render_mcp_panel();
@@ -139,9 +111,11 @@ private:
 
 public:
     UISystem(SDL_Window* window, SDL_GPUDevice* gpu_device, ApplicationState& state,
-             std::vector<ProviderPtr>& providers);
+             std::vector<ProviderPtr>& providers, ConversationState& conversations,
+             McpService& mcp_service);
     Result init();
     void deinit();
+    void update();
     void render_frame_to_backbuffer();
     void process_event(const SDL_Event& event);
 };

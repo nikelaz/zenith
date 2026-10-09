@@ -1,4 +1,5 @@
 #include "../src/providers/provider.h"
+#include "../src/conversation/conversation.h"
 #include "../src/providers/provider_runtime.h"
 #include "../src/persistence/persistent-store.h"
 #include <chrono>
@@ -221,13 +222,53 @@ TEST(ProviderRuntime, RunsDifferentConversationsConcurrently) {
     EXPECT_EQ(events[0].kind, EventKind::TurnCompleted);
 }
 
+TEST(ProviderRuntime, ReapsCompletedWorkersWhileIdle) {
+    RuntimeContext context;
+    ProviderRuntime runtime{};
+    provider_runtime_init(&runtime, runtime_process, &context);
+    ASSERT_EQ(provider_runtime_start(&runtime).status, ResultStatus::Ok);
+    for (TurnId id = 1; id <= 24; ++id)
+        ASSERT_EQ(provider_runtime_submit(&runtime, runtime_request(id, "thread")).status,
+                  ResultStatus::Ok);
+    {
+        std::unique_lock lock(context.mutex);
+        EXPECT_TRUE(context.ready.wait_for(lock, std::chrono::seconds(2),
+                                          [&context] { return context.processed.size() == 24; }));
+    }
+    bool reaped = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline) {
+        {
+            std::lock_guard lock(runtime.request_mutex);
+            reaped = runtime.requests.empty() && runtime.turn_workers.empty();
+        }
+        if (reaped)
+            break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    provider_runtime_shutdown(&runtime);
+    EXPECT_TRUE(reaped);
+    EXPECT_EQ(provider_runtime_poll_events(&runtime).size(), 24u);
+}
+
+TEST(ProviderRuntime, RejectsUnassignedTurnIds) {
+    RuntimeContext context;
+    ProviderRuntime runtime{};
+    provider_runtime_init(&runtime, runtime_process, &context);
+    ASSERT_EQ(provider_runtime_start(&runtime).status, ResultStatus::Ok);
+    EXPECT_EQ(provider_runtime_submit(&runtime, runtime_request(0, "thread")).status,
+              ResultStatus::Error);
+    provider_runtime_shutdown(&runtime);
+    EXPECT_TRUE(context.processed.empty());
+}
+
 TEST(PersistentStore, SavesAndLoadsProjectsThreadsMessagesAndSelection) {
     TemporaryDatabase database;
     ApplicationState saved;
     saved.projects = {
         {"/work/one", true, {{"First", "first description", "thread-1", {
-            {ChatMessageRole::User, "question", "", {}, {}, {}},
-            {ChatMessageRole::Assistant, "answer", "private reasoning", {}, {
+            {ChatMessageRole::User, "question", "", {}, {}},
+            {ChatMessageRole::Assistant, "answer", "private reasoning", {
                 {ChatSegment::Kind::Text, "before tool", {}},
                 {ChatSegment::Kind::Tool, {}, {"tool-1", "shell", "echo hi", "{}",
                     "/work/one", "hi\n", "completed", 0, 12, true, true}},
@@ -235,7 +276,7 @@ TEST(PersistentStore, SavesAndLoadsProjectsThreadsMessagesAndSelection) {
             }, {}},
         }}}},
         {"/work/two", false, {{"Second", "second description", "thread-2", {
-            {ChatMessageRole::Assistant, "other project", "", {}, {}, {}},
+            {ChatMessageRole::Assistant, "other project", "", {}, {}},
         }}}},
     };
     saved.selected_project = 1;
@@ -275,7 +316,8 @@ TEST(PersistentStore, SavesAndLoadsProjectsThreadsMessagesAndSelection) {
     EXPECT_EQ(loaded.projects[0].threads[0].messages[0].role, ChatMessageRole::User);
     EXPECT_EQ(loaded.projects[0].threads[0].messages[0].content, "question");
     const ChatMessage& answer = loaded.projects[0].threads[0].messages[1];
-    EXPECT_EQ(answer.content, "answer");
+    EXPECT_TRUE(answer.content.empty());
+    EXPECT_EQ(chat_message_text(answer), "before toolafter tool");
     EXPECT_EQ(answer.reasoning, "private reasoning");
     ASSERT_EQ(answer.segments.size(), 3u);
     EXPECT_EQ(answer.segments[0].text, "before tool");
@@ -286,7 +328,7 @@ TEST(PersistentStore, SavesAndLoadsProjectsThreadsMessagesAndSelection) {
     EXPECT_EQ(answer.segments[1].tool.duration_ms, 12);
     EXPECT_TRUE(answer.segments[1].tool.completed);
     EXPECT_EQ(answer.segments[2].text, "after tool");
-    EXPECT_EQ(loaded.projects[1].threads[0].messages[0].content, "other project");
+    EXPECT_EQ(chat_message_text(loaded.projects[1].threads[0].messages[0]), "other project");
     EXPECT_EQ(loaded.selected_project, 1u);
     EXPECT_EQ(loaded.selected_thread, 0u);
 }

@@ -76,7 +76,12 @@ Result Application::init() {
             return provider_result;
         }
     }
-    m_ui.emplace(m_window, m_gpu_device, m_state, m_providers);
+    Result mcp_result = mcp_service_start(&m_mcp_service, &m_providers);
+    if (mcp_result.status == ResultStatus::Error) {
+        deinit();
+        return mcp_result;
+    }
+    m_ui.emplace(m_window, m_gpu_device, m_state, m_providers, m_conversations, m_mcp_service);
 
     Result ui_init_result = m_ui->init();
     if (ui_init_result.status == ResultStatus::Error) {
@@ -93,6 +98,8 @@ void Application::deinit() {
     for (const ProviderPtr& provider : m_providers)
         if (provider->request_shutdown != nullptr)
             provider->request_shutdown(provider.get());
+
+    mcp_service_shutdown(&m_mcp_service);
 
     if (m_ui) {
         m_ui->deinit();
@@ -111,6 +118,7 @@ void Application::deinit() {
             show_error_message(error_message.c_str(), m_window);
         }
     }
+    conversation_clear(&m_conversations);
     m_providers.clear();
     m_state_store.close();
 
@@ -125,6 +133,7 @@ Result Application::window_init() {
 
     int window_width = kWindowWidth;
     int window_height = kWindowHeight;
+
 #if OS_WIN
     const SDL_DisplayID primary_display = SDL_GetPrimaryDisplay();
     if (primary_display == 0) {
@@ -230,6 +239,8 @@ void Application::run() {
         }
         if (m_quit_requested)
             break;
+        conversation_update(&m_conversations, &m_state, m_providers);
+        m_ui->update();
         m_ui->render_frame_to_backbuffer();
     }
 }

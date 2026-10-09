@@ -3,6 +3,23 @@
 #include <iterator>
 #include "../src/ui/chat-panel.cpp"
 
+TEST(ChatRendering, TranscriptSelectionBelongsToEachPanel) {
+    ChatPanelState first;
+    ChatPanelState second;
+    ChatRenderContext render;
+    TextSpan span{};
+    span.text = "first transcript";
+    render.spans.push_back(span);
+    first.selection.focus.byte = 5;
+    render.selection = &first.selection;
+    EXPECT_EQ(selected_transcript_text(render), "first");
+    render.selection = &second.selection;
+    EXPECT_FALSE(has_text_selection(render));
+    EXPECT_TRUE(selected_transcript_text(render).empty());
+    render.selection = &first.selection;
+    EXPECT_EQ(selected_transcript_text(render), "first");
+}
+
 TEST(ChatRendering, MultipleCodeBlocksHaveSeparateLayoutAndScrollState) {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
@@ -13,6 +30,7 @@ TEST(ChatRendering, MultipleCodeBlocksHaveSeparateLayoutAndScrollState) {
     int width = 0;
     int height = 0;
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    ChatRenderContext render;
     ChatMarkdown markdown;
     const std::string text = "First snippet\n\n```css\n.a { color: red; }\n```\n\n"
         "```html\n<div class=\"a\">\n  Hello\n</div>\n```";
@@ -20,10 +38,10 @@ TEST(ChatRendering, MultipleCodeBlocksHaveSeparateLayoutAndScrollState) {
         ImGui::NewFrame();
         ImGui::SetNextWindowSize(ImVec2(500.0f, 150.0f));
         ImGui::Begin("Chat");
-        has_chat_component = false;
+        render.has_component = false;
         markdown.code_card_index = 0;
         ImGui::BeginGroup();
-        render_markdown_text(markdown, text);
+        render_markdown_text(render, markdown, text);
         ImGuiWindow* parent = ImGui::GetCurrentWindow();
         ASSERT_EQ(parent->DC.ChildWindows.Size, 2);
         ImGuiWindow* first = parent->DC.ChildWindows[0];
@@ -57,15 +75,16 @@ TEST(ChatRendering, SavedTranscript) {
     int width = 0;
     int height = 0;
     io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    ChatRenderContext render;
     ChatMarkdown markdown;
     for (int frame = 0; frame < 4; ++frame) {
         ImGui::NewFrame();
         ImGui::SetNextWindowSize(ImVec2(800.0f, 600.0f));
         ImGui::Begin("Chat");
-        has_chat_component = false;
+        render.has_component = false;
         markdown.code_card_index = 0;
         ImGui::BeginGroup();
-        render_markdown_text(markdown, text);
+        render_markdown_text(render, markdown, text);
         EXPECT_GE(markdown.code_card_index, 2);
         ImGui::EndGroup();
         ImGui::SetScrollY(frame % 2 == 0 ? ImGui::GetScrollMaxY() : 0.0f);

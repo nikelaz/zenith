@@ -2,7 +2,7 @@
 #define PROVIDER_H
 
 #include "../base/result.h"
-#include "../state/application-state.h"
+#include "../state/chat.h"
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -114,11 +114,16 @@ struct Event {
     bool is_terminal = false;
 };
 
+struct ProviderHistoryMessage {
+    ChatMessageRole role = ChatMessageRole::User;
+    std::string content;
+};
+
 struct TurnRequest {
     TurnId turn_id = 0;
     ConversationId conversation_id;
     std::string prompt;
-    std::vector<ChatMessage> history;
+    std::vector<ProviderHistoryMessage> history;
     std::vector<FileReference> file_references;
     std::vector<FileAttachment> attachments;
     std::filesystem::path working_directory;

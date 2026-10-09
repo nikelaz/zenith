@@ -1,9 +1,9 @@
 #include "persistent-store.h"
+#include "../conversation/conversation.h"
 #include <sqlite3.h>
 #include <nlohmann/json.hpp>
 #include <memory>
 #include <utility>
-
 
 struct StatementDeleter {
     void operator()(sqlite3_stmt* statement) const {
@@ -14,7 +14,7 @@ struct StatementDeleter {
 using Statement = std::unique_ptr<sqlite3_stmt, StatementDeleter>;
 using Json = nlohmann::json;
 
-bool prepare(sqlite3* database, const char* sql, Statement& statement) {
+static bool prepare(sqlite3* database, const char* sql, Statement& statement) {
     sqlite3_stmt* raw_statement = nullptr;
     if (sqlite3_prepare_v2(database, sql, -1, &raw_statement, nullptr) != SQLITE_OK) {
         return false;
@@ -23,12 +23,12 @@ bool prepare(sqlite3* database, const char* sql, Statement& statement) {
     return true;
 }
 
-std::string column_text(sqlite3_stmt* statement, int column) {
+static std::string column_text(sqlite3_stmt* statement, int column) {
     const auto* text = sqlite3_column_text(statement, column);
     return text == nullptr ? std::string{} : reinterpret_cast<const char*>(text);
 }
 
-bool has_column(sqlite3* database, const char* table, const char* column) {
+static bool has_column(sqlite3* database, const char* table, const char* column) {
     const std::string sql = std::string("PRAGMA table_info(") + table + ")";
     Statement statement;
     if (!prepare(database, sql.c_str(), statement))
@@ -40,7 +40,7 @@ bool has_column(sqlite3* database, const char* table, const char* column) {
     return false;
 }
 
-Json serialize_segments(const std::vector<ChatSegment>& segments) {
+static Json serialize_segments(const std::vector<ChatSegment>& segments) {
     Json result = Json::array();
     for (const ChatSegment& segment : segments) {
         if (segment.kind == ChatSegment::Kind::Text) {
@@ -61,7 +61,7 @@ Json serialize_segments(const std::vector<ChatSegment>& segments) {
     return result;
 }
 
-std::vector<ChatSegment> deserialize_segments(const std::string& serialized) {
+static std::vector<ChatSegment> deserialize_segments(const std::string& serialized) {
     std::vector<ChatSegment> result;
     try {
         const Json values = Json::parse(serialized);
@@ -100,7 +100,7 @@ std::vector<ChatSegment> deserialize_segments(const std::string& serialized) {
     return result;
 }
 
-Json serialize_attachments(const std::vector<ChatAttachment>& attachments) {
+static Json serialize_attachments(const std::vector<ChatAttachment>& attachments) {
     Json result = Json::array();
     for (const ChatAttachment& attachment : attachments) {
         result.push_back({{"filename", attachment.filename},
@@ -110,7 +110,7 @@ Json serialize_attachments(const std::vector<ChatAttachment>& attachments) {
     return result;
 }
 
-std::vector<ChatAttachment> deserialize_attachments(const std::string& serialized) {
+static std::vector<ChatAttachment> deserialize_attachments(const std::string& serialized) {
     std::vector<ChatAttachment> result;
     try {
         const Json values = Json::parse(serialized);
@@ -474,11 +474,11 @@ Result PersistentStore::load(ApplicationState& state) {
                 {},
                 {},
                 {},
-                {},
             };
             message.reasoning = column_text(message_statement.get(), 2);
             message.segments = deserialize_segments(column_text(message_statement.get(), 3));
             message.attachments = deserialize_attachments(column_text(message_statement.get(), 4));
+            chat_message_normalize(&message);
             thread.messages.push_back(std::move(message));
         }
         if (message_result != SQLITE_DONE) {
@@ -623,7 +623,8 @@ Result PersistentStore::save(const ApplicationState& state) {
                 sqlite3_bind_int(message_statement.get(), 1, thread_position);
                 sqlite3_bind_int(message_statement.get(), 2, static_cast<int>(message_index));
                 sqlite3_bind_int(message_statement.get(), 3, static_cast<int>(message.role));
-                sqlite3_bind_text(message_statement.get(), 4, message.content.c_str(), -1, SQLITE_TRANSIENT);
+                const std::string content = chat_message_text(message);
+                sqlite3_bind_text(message_statement.get(), 4, content.c_str(), -1, SQLITE_TRANSIENT);
                 sqlite3_bind_text(message_statement.get(), 5, message.reasoning.c_str(), -1, SQLITE_TRANSIENT);
                 const std::string segments = serialize_segments(message.segments).dump();
                 sqlite3_bind_text(message_statement.get(), 6, segments.c_str(), -1, SQLITE_TRANSIENT);

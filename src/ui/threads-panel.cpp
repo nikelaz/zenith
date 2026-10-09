@@ -21,7 +21,7 @@ struct PendingProjectDelete {
     std::size_t project_index;
 };
 
-std::string next_thread_id(const ApplicationState& state) {
+static std::string next_thread_id(const ApplicationState& state) {
     static std::uint64_t next_id = 1;
     for (;;) {
         const std::string candidate = "thread-" + std::to_string(next_id++);
@@ -35,12 +35,12 @@ std::string next_thread_id(const ApplicationState& state) {
     }
 }
 
-std::string project_name(const std::filesystem::path& directory) {
+static std::string project_name(const std::filesystem::path& directory) {
     const std::string name = directory.filename().string();
     return name.empty() ? directory.root_path().string() : name;
 }
 
-std::string thread_title(const ChatProject& project, std::size_t thread_index) {
+static std::string thread_title(const ChatProject& project, std::size_t thread_index) {
     const ChatThread& thread = project.threads[thread_index];
     if (!thread.title.empty())
         return thread.title;
@@ -48,7 +48,7 @@ std::string thread_title(const ChatProject& project, std::size_t thread_index) {
         : "New Thread #" + std::to_string(thread_index + 1);
 }
 
-std::filesystem::path normalized_directory(const std::filesystem::path& directory,
+static std::filesystem::path normalized_directory(const std::filesystem::path& directory,
                                             std::error_code& error) {
     std::filesystem::path normalized = std::filesystem::weakly_canonical(directory, error);
     if (error) {
@@ -58,7 +58,7 @@ std::filesystem::path normalized_directory(const std::filesystem::path& director
     return normalized;
 }
 
-void render_folder_icon(ImDrawList* draw_list, ImVec2 position, float size) {
+static void render_folder_icon(ImDrawList* draw_list, ImVec2 position, float size) {
     static constexpr unsigned char alpha[12][12] = {
         {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
         {0xa7, 0xf1, 0xf0, 0xf0, 0xf2, 0xc9, 0x3b, 0x0e, 0x0f, 0x0f, 0x0d, 0x00},
@@ -86,7 +86,7 @@ void render_folder_icon(ImDrawList* draw_list, ImVec2 position, float size) {
     }
 }
 
-void apply_open_project_selection(ApplicationState& state,
+static void apply_open_project_selection(ApplicationState& state,
                                   const std::filesystem::path& selected_directory,
                                   SDL_Window* window) {
     std::error_code error;
@@ -112,7 +112,7 @@ void apply_open_project_selection(ApplicationState& state,
     state.selected_thread = 0;
 }
 
-void open_project(ApplicationState& state,
+static void open_project(ApplicationState& state,
                   const std::shared_ptr<FileDialogQueue>& dialog_queue,
                   SDL_Window* window) {
     std::u8string default_path_storage;
@@ -125,7 +125,7 @@ void open_project(ApplicationState& state,
                          : reinterpret_cast<const char*>(default_path_storage.c_str()));
 }
 
-void add_thread(ApplicationState& state, std::size_t project_index) {
+static void add_thread(ApplicationState& state, std::size_t project_index) {
     ChatProject& project = state.projects[project_index];
     project.threads.insert(project.threads.begin(), {
         "",
@@ -138,7 +138,7 @@ void add_thread(ApplicationState& state, std::size_t project_index) {
     state.selected_thread = 0;
 }
 
-void render_thread_card(ApplicationState& state, std::size_t project_index,
+static void render_thread_card(ApplicationState& state, std::size_t project_index,
                         std::size_t thread_index, std::optional<PendingThreadDelete>& pending_delete,
                         bool& open_delete_confirmation) {
     ChatProject& project = state.projects[project_index];

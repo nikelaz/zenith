@@ -52,43 +52,12 @@ static std::string copilot_json_text(const Json& value) {
 struct CopilotState {
     ProviderRuntime runtime;
     GitHubCopilotOptions options;
-    std::mutex active_mutex;
-    struct ActiveTurn {
-        ChildProcess* process = nullptr;
-        bool cancelled = false;
-    };
-    std::map<TurnId, ActiveTurn> active_turns;
-    ChildProcess* startup_process = nullptr;
-    ChildProcess* mcp_process = nullptr;
-    bool shutting_down = false;
-    std::mutex startup_mutex;
-    bool startup_complete = false;
-    std::condition_variable startup_ready;
-    bool startup_applied = false;
-    ProviderAvailability startup_availability = ProviderAvailability::Unknown;
-    std::filesystem::path startup_location;
-    std::string startup_default_model;
-    std::vector<ModelOption> startup_models;
-    std::mutex usage_mutex;
-    std::condition_variable usage_ready;
-    bool usage_requested = false;
-    bool usage_updated = false;
-    bool usage_stopping = false;
-    UsageSnapshot usage_snapshot;
-    std::thread usage_worker;
-    ChildProcess* usage_process = nullptr;
-    std::mutex skills_mutex;
-    std::condition_variable skills_ready;
-    struct SkillsRequest {
-        std::filesystem::path working_directory;
-    };
-    std::deque<SkillsRequest> skills_requests;
-    std::vector<SkillDiscoverySnapshot> skills_updates;
-    bool skills_stopping = false;
-    std::thread skills_worker;
-    ChildProcess* skills_process = nullptr;
+    ProviderProcesses processes;
+    ProviderStartupState startup;
+    ProviderUsageState usage;
+    ProviderSkillsState skills;
     std::mutex skills_cli_mutex;
-    ChildProcess* skills_cli_process = nullptr;
+
 };
 
 struct CopilotStreamContext {
@@ -99,7 +68,7 @@ struct CopilotStreamContext {
     bool available_commands_received = false;
 };
 
-std::string utc_timestamp() {
+static std::string utc_timestamp() {
     const std::time_t now = std::time(nullptr);
     std::tm utc{};
 #if OS_WIN
@@ -112,7 +81,7 @@ std::string utc_timestamp() {
     return timestamp.str();
 }
 
-Json json_shape(const Json& value, int depth = 0) {
+static Json json_shape(const Json& value, int depth = 0) {
     Json shape = {{"type", value.type_name()}};
     if (depth >= 5)
         return shape;
@@ -133,7 +102,7 @@ Json json_shape(const Json& value, int depth = 0) {
     return shape;
 }
 
-Json response_diagnostic(const Json& response) {
+static Json response_diagnostic(const Json& response) {
     Json diagnostic = {{"shape", json_shape(response)}};
     if (!response.is_object())
         return diagnostic;
@@ -160,7 +129,7 @@ Json response_diagnostic(const Json& response) {
     return diagnostic;
 }
 
-std::string read_diagnostic_tail(const std::filesystem::path& path) {
+static std::string read_diagnostic_tail(const std::filesystem::path& path) {
     if (path.empty())
         return {};
     std::ifstream input(path, std::ios::binary);
@@ -178,7 +147,7 @@ std::string read_diagnostic_tail(const std::filesystem::path& path) {
     return content;
 }
 
-void append_copilot_diagnostic(const GitHubCopilotOptions& options,
+static void append_copilot_diagnostic(const GitHubCopilotOptions& options,
                                const TurnRequest& request, const std::string& stage,
                                const std::string& error, const Json& response,
                                const std::filesystem::path& stderr_path) {
@@ -204,7 +173,7 @@ void append_copilot_diagnostic(const GitHubCopilotOptions& options,
         output << entry.dump() << '\n';
 }
 
-Result start_copilot_process(const GitHubCopilotOptions* options, const std::string& model,
+static Result start_copilot_process(const GitHubCopilotOptions* options, const std::string& model,
                              const std::string& effort, ChildProcess* process,
                              const std::filesystem::path& error_output_path = {}) {
     if (model.find_first_of("\"\\%!&|<>^\r\n") != std::string::npos ||
@@ -247,7 +216,7 @@ static bool copilot_read_message(FILE* output, Json* message) {
     return true;
 }
 
-std::string tool_content_text(const Json& content) {
+static std::string tool_content_text(const Json& content) {
     if (!content.is_array())
         return copilot_json_text(content);
 
@@ -265,7 +234,7 @@ std::string tool_content_text(const Json& content) {
     return result;
 }
 
-Event make_tool_activity_event(CopilotStreamContext* context, const Json& update) {
+static Event make_tool_activity_event(CopilotStreamContext* context, const Json& update) {
     Event event{EventKind::ToolActivity, context->request->conversation_id,
                 context->request->turn_id};
     event.item_id = string_value(update, "toolCallId");
@@ -299,7 +268,7 @@ Event make_tool_activity_event(CopilotStreamContext* context, const Json& update
     return event;
 }
 
-void emit_text_event(CopilotStreamContext* context, EventKind kind, const Json& content) {
+static void emit_text_event(CopilotStreamContext* context, EventKind kind, const Json& content) {
     if (context->request == nullptr || string_value(content, "type") != "text")
         return;
     const Event event{kind, context->request->conversation_id, context->request->turn_id,
@@ -307,7 +276,7 @@ void emit_text_event(CopilotStreamContext* context, EventKind kind, const Json& 
     provider_runtime_emit(context->runtime, &event);
 }
 
-bool respond_to_permission(ChildProcess* process, const Json& message) {
+static bool respond_to_permission(ChildProcess* process, const Json& message) {
     const Json params = message.value("params", Json::object());
     const Json options = params.value("options", Json::array());
     std::string option_id;
@@ -336,7 +305,7 @@ bool respond_to_permission(ChildProcess* process, const Json& message) {
                                                         {"optionId", option_id}}}}}});
 }
 
-void handle_server_message(ChildProcess* process, CopilotStreamContext* context,
+static void handle_server_message(ChildProcess* process, CopilotStreamContext* context,
                            const Json& message) {
     const std::string method = string_value(message, "method");
     if (method == "session/request_permission") {
@@ -410,7 +379,7 @@ static bool copilot_wait_for_response(ChildProcess* process, int request_id, Cop
     }
 }
 
-std::string copilot_quota_name(const std::string& key) {
+static std::string copilot_quota_name(const std::string& key) {
     if (key == "premium_interactions")
         return "Monthly Credits";
     if (key == "chat")
@@ -435,7 +404,7 @@ std::string copilot_quota_name(const std::string& key) {
     return name;
 }
 
-std::string quota_number(double value) {
+static std::string quota_number(double value) {
     std::ostringstream formatted;
     const double rounded = std::round(value);
     if (std::isfinite(value) && std::abs(value - rounded) < 0.0001) {
@@ -446,7 +415,7 @@ std::string quota_number(double value) {
     return formatted.str();
 }
 
-UsageSnapshot parse_copilot_usage(const Json& result) {
+static UsageSnapshot parse_copilot_usage(const Json& result) {
     UsageSnapshot snapshot;
     const Json quotas = result.value("quotaSnapshots", Json::object());
     if (!quotas.is_object())
@@ -526,7 +495,7 @@ UsageSnapshot parse_copilot_usage(const Json& result) {
     return snapshot;
 }
 
-bool wait_for_server_response(ChildProcess* process, int request_id, Json* response,
+static bool wait_for_server_response(ChildProcess* process, int request_id, Json* response,
                               std::string* error) {
     for (;;) {
         Json message;
@@ -594,15 +563,15 @@ bool wait_for_server_response(ChildProcess* process, int request_id, Json* respo
     }
 }
 
-bool fetch_copilot_usage(CopilotState* state, UsageSnapshot* snapshot,
+static bool fetch_copilot_usage(CopilotState* state, UsageSnapshot* snapshot,
                          std::string* error) {
     child_process_ignore_sigpipe();
 
     std::filesystem::path executable;
     {
-        std::unique_lock lock(state->startup_mutex);
-        state->startup_ready.wait(lock, [state] { return state->startup_complete; });
-        executable = state->startup_location;
+        std::unique_lock lock(state->startup.mutex);
+        state->startup.ready.wait(lock, [state] { return state->startup.complete; });
+        executable = state->startup.location;
     }
     if (executable.empty()) {
         *error = "GitHub Copilot CLI executable was not found";
@@ -623,9 +592,9 @@ bool fetch_copilot_usage(CopilotState* state, UsageSnapshot* snapshot,
     _setmode(_fileno(process.output), _O_BINARY);
 #endif
     {
-        std::lock_guard lock(state->active_mutex);
-        state->usage_process = &process;
-        if (state->shutting_down)
+        std::lock_guard lock(state->processes.mutex);
+        state->processes.usage_process = &process;
+        if (state->processes.shutting_down)
             child_process_terminate(&process);
     }
 
@@ -653,25 +622,25 @@ bool fetch_copilot_usage(CopilotState* state, UsageSnapshot* snapshot,
         *snapshot = parse_copilot_usage(response.value("result", Json::object()));
 
     {
-        std::lock_guard lock(state->active_mutex);
-        if (state->usage_process == &process)
-            state->usage_process = nullptr;
+        std::lock_guard lock(state->processes.mutex);
+        if (state->processes.usage_process == &process)
+            state->processes.usage_process = nullptr;
     }
     child_process_stop(&process);
     return success;
 }
 
-void run_copilot_usage(void* context) {
+static void run_copilot_usage(void* context) {
     CopilotState* state = static_cast<CopilotState*>(context);
     for (;;) {
         {
-            std::unique_lock lock(state->usage_mutex);
-            state->usage_ready.wait(lock, [state] {
-                return state->usage_stopping || state->usage_requested;
+            std::unique_lock lock(state->usage.mutex);
+            state->usage.ready.wait(lock, [state] {
+                return state->usage.stopping || state->usage.requested;
             });
-            if (state->usage_stopping)
+            if (state->usage.stopping)
                 return;
-            state->usage_requested = false;
+            state->usage.requested = false;
         }
 
         UsageSnapshot snapshot;
@@ -683,33 +652,33 @@ void run_copilot_usage(void* context) {
             snapshot.metrics.push_back(std::move(metric));
         }
         snapshot.updated_at = utc_timestamp();
-        std::lock_guard lock(state->usage_mutex);
-        state->usage_snapshot = std::move(snapshot);
-        state->usage_updated = true;
+        std::lock_guard lock(state->usage.mutex);
+        state->usage.snapshot = std::move(snapshot);
+        state->usage.updated = true;
     }
 }
 
-void request_copilot_usage(Provider* provider) {
+static void request_copilot_usage(Provider* provider) {
     CopilotState* state = static_cast<CopilotState*>(provider->state);
     {
-        std::lock_guard lock(state->usage_mutex);
-        if (state->usage_stopping)
+        std::lock_guard lock(state->usage.mutex);
+        if (state->usage.stopping)
             return;
-        state->usage_requested = true;
+        state->usage.requested = true;
     }
-    state->usage_ready.notify_one();
+    state->usage.ready.notify_one();
 }
 
-std::optional<UsageSnapshot> poll_copilot_usage(Provider* provider) {
+static std::optional<UsageSnapshot> poll_copilot_usage(Provider* provider) {
     CopilotState* state = static_cast<CopilotState*>(provider->state);
-    std::lock_guard lock(state->usage_mutex);
-    if (!state->usage_updated)
+    std::lock_guard lock(state->usage.mutex);
+    if (!state->usage.updated)
         return std::nullopt;
-    state->usage_updated = false;
-    return state->usage_snapshot;
+    state->usage.updated = false;
+    return state->usage.snapshot;
 }
 
-bool initialize_copilot(ChildProcess* process, CopilotStreamContext* context, Json* response,
+static bool initialize_copilot(ChildProcess* process, CopilotStreamContext* context, Json* response,
                         std::string* error) {
     const Json initialize = {
         {"jsonrpc", "2.0"},
@@ -723,7 +692,7 @@ bool initialize_copilot(ChildProcess* process, CopilotStreamContext* context, Js
            copilot_wait_for_response(process, 1, context, response, error);
 }
 
-std::filesystem::path session_working_directory(const TurnRequest* request,
+static std::filesystem::path session_working_directory(const TurnRequest* request,
                                                  std::error_code* error) {
     if (!request->working_directory.empty()) {
         const std::filesystem::path absolute =
@@ -735,7 +704,7 @@ std::filesystem::path session_working_directory(const TurnRequest* request,
     return std::filesystem::current_path(*error);
 }
 
-bool create_copilot_session(ChildProcess* process, CopilotStreamContext* context,
+static bool create_copilot_session(ChildProcess* process, CopilotStreamContext* context,
                             const std::filesystem::path& working_directory, Json* response,
                             std::string* error) {
     const Json create = {
@@ -748,7 +717,7 @@ bool create_copilot_session(ChildProcess* process, CopilotStreamContext* context
            copilot_wait_for_response(process, 2, context, response, error);
 }
 
-void append_model_options(const Json& options, std::vector<ModelOption>* models) {
+static void append_model_options(const Json& options, std::vector<ModelOption>* models) {
     if (!options.is_array())
         return;
     for (const Json& option : options) {
@@ -771,7 +740,7 @@ void append_model_options(const Json& options, std::vector<ModelOption>* models)
     }
 }
 
-std::vector<ModelOption> models_from_session(const Json& session, std::string* default_model) {
+static std::vector<ModelOption> models_from_session(const Json& session, std::string* default_model) {
     std::vector<ModelOption> models;
     const Json options = session.value("result", Json::object()).value("configOptions", Json::array());
     if (!options.is_array())
@@ -804,7 +773,7 @@ std::vector<ModelOption> models_from_session(const Json& session, std::string* d
     return models;
 }
 
-bool discover_copilot_models(CopilotState* state, ProviderRuntime* runtime,
+static bool discover_copilot_models(CopilotState* state, ProviderRuntime* runtime,
                              ProviderAvailability* availability,
                              std::vector<ModelOption>* models, std::string* default_model) {
     child_process_ignore_sigpipe();
@@ -820,9 +789,9 @@ bool discover_copilot_models(CopilotState* state, ProviderRuntime* runtime,
     }
 
     {
-        std::lock_guard lock(state->active_mutex);
-        state->startup_process = &process;
-        if (state->shutting_down)
+        std::lock_guard lock(state->processes.mutex);
+        state->processes.startup_process = &process;
+        if (state->processes.shutting_down)
             child_process_terminate(&process);
     }
 
@@ -841,21 +810,21 @@ bool discover_copilot_models(CopilotState* state, ProviderRuntime* runtime,
         *models = models_from_session(session, default_model);
     }
     {
-        std::lock_guard lock(state->active_mutex);
-        if (state->startup_process == &process)
-            state->startup_process = nullptr;
+        std::lock_guard lock(state->processes.mutex);
+        if (state->processes.startup_process == &process)
+            state->processes.startup_process = nullptr;
     }
     child_process_stop(&process);
     return success;
 }
 
-bool fetch_copilot_cli_skill_list(CopilotState* state,
+static bool fetch_copilot_cli_skill_list(CopilotState* state,
                                  const std::filesystem::path& working_directory,
                                  Json* skill_list, std::string* error) {
     std::lock_guard cli_lock(state->skills_cli_mutex);
     {
-        std::lock_guard lock(state->active_mutex);
-        if (state->shutting_down) {
+        std::lock_guard lock(state->processes.mutex);
+        if (state->processes.shutting_down) {
             *error = "GitHub Copilot skill discovery is stopping";
             return false;
         }
@@ -873,9 +842,9 @@ bool fetch_copilot_cli_skill_list(CopilotState* state,
         return false;
     }
     {
-        std::lock_guard lock(state->active_mutex);
-        state->skills_cli_process = &process;
-        if (state->shutting_down)
+        std::lock_guard lock(state->processes.mutex);
+        state->processes.skills_cli_process = &process;
+        if (state->processes.shutting_down)
             child_process_terminate(&process);
     }
 
@@ -893,9 +862,9 @@ bool fetch_copilot_cli_skill_list(CopilotState* state,
     }
 
     {
-        std::lock_guard lock(state->active_mutex);
-        if (state->skills_cli_process == &process)
-            state->skills_cli_process = nullptr;
+        std::lock_guard lock(state->processes.mutex);
+        if (state->processes.skills_cli_process == &process)
+            state->processes.skills_cli_process = nullptr;
     }
     child_process_stop(&process);
 
@@ -919,7 +888,7 @@ bool fetch_copilot_cli_skill_list(CopilotState* state,
     return true;
 }
 
-bool copilot_command_matches_skill(const std::string& command_name,
+static bool copilot_command_matches_skill(const std::string& command_name,
                                    const std::string& skill_name) {
     if (command_name == skill_name)
         return true;
@@ -929,7 +898,7 @@ bool copilot_command_matches_skill(const std::string& command_name,
            command_name[command_name.size() - skill_name.size() - 1] == '/';
 }
 
-std::vector<SkillEntry> copilot_skill_entries(
+static std::vector<SkillEntry> copilot_skill_entries(
     const Json& skill_list, const std::vector<SkillEntry>& available_commands) {
     const Json& rows = skill_list.is_array() ? skill_list : skill_list["skills"];
     std::vector<SkillEntry> entries;
@@ -969,7 +938,7 @@ std::vector<SkillEntry> copilot_skill_entries(
     return entries;
 }
 
-SkillDiscoverySnapshot fetch_copilot_skills(
+static SkillDiscoverySnapshot fetch_copilot_skills(
     CopilotState* state, const std::filesystem::path& requested_working_directory) {
     SkillDiscoverySnapshot snapshot;
     std::error_code path_error;
@@ -992,9 +961,9 @@ SkillDiscoverySnapshot fetch_copilot_skills(
         return snapshot;
     }
     {
-        std::lock_guard lock(state->active_mutex);
-        state->skills_process = &process;
-        if (state->shutting_down)
+        std::lock_guard lock(state->processes.mutex);
+        state->processes.skills_process = &process;
+        if (state->processes.shutting_down)
             child_process_terminate(&process);
     }
 
@@ -1025,68 +994,68 @@ SkillDiscoverySnapshot fetch_copilot_skills(
     }
 
     {
-        std::lock_guard lock(state->active_mutex);
-        if (state->skills_process == &process)
-            state->skills_process = nullptr;
+        std::lock_guard lock(state->processes.mutex);
+        if (state->processes.skills_process == &process)
+            state->processes.skills_process = nullptr;
     }
     child_process_stop(&process);
     return snapshot;
 }
 
-void run_copilot_skills(void* context) {
+static void run_copilot_skills(void* context) {
     CopilotState* state = static_cast<CopilotState*>(context);
     for (;;) {
-        CopilotState::SkillsRequest request;
+        ProviderSkillsRequest request;
         {
-            std::unique_lock lock(state->skills_mutex);
-            state->skills_ready.wait(lock, [state] {
-                return state->skills_stopping || !state->skills_requests.empty();
+            std::unique_lock lock(state->skills.mutex);
+            state->skills.ready.wait(lock, [state] {
+                return state->skills.stopping || !state->skills.requests.empty();
             });
-            if (state->skills_stopping)
+            if (state->skills.stopping)
                 return;
-            request = std::move(state->skills_requests.front());
-            state->skills_requests.pop_front();
+            request = std::move(state->skills.requests.front());
+            state->skills.requests.pop_front();
         }
 
         {
-            std::unique_lock lock(state->startup_mutex);
-            state->startup_ready.wait(lock, [state] { return state->startup_complete; });
+            std::unique_lock lock(state->startup.mutex);
+            state->startup.ready.wait(lock, [state] { return state->startup.complete; });
         }
         {
-            std::lock_guard lock(state->skills_mutex);
-            if (state->skills_stopping)
+            std::lock_guard lock(state->skills.mutex);
+            if (state->skills.stopping)
                 return;
         }
 
         SkillDiscoverySnapshot snapshot =
             fetch_copilot_skills(state, request.working_directory);
-        std::lock_guard lock(state->skills_mutex);
-        state->skills_updates.push_back(std::move(snapshot));
+        std::lock_guard lock(state->skills.mutex);
+        state->skills.updates.push_back(std::move(snapshot));
     }
 }
 
-Result request_copilot_skills(Provider* provider,
+static Result request_copilot_skills(Provider* provider,
                               const std::filesystem::path& working_directory, bool) {
     CopilotState* state = static_cast<CopilotState*>(provider->state);
     {
-        std::lock_guard lock(state->skills_mutex);
-        if (state->skills_stopping)
+        std::lock_guard lock(state->skills.mutex);
+        if (state->skills.stopping)
             return result_error("GitHub Copilot skill discovery is stopping");
-        state->skills_requests.push_back({working_directory});
+        state->skills.requests.push_back({working_directory});
     }
-    state->skills_ready.notify_one();
+    state->skills.ready.notify_one();
     return result_ok();
 }
 
-std::vector<SkillDiscoverySnapshot> poll_copilot_skills(Provider* provider) {
+static std::vector<SkillDiscoverySnapshot> poll_copilot_skills(Provider* provider) {
     CopilotState* state = static_cast<CopilotState*>(provider->state);
-    std::lock_guard lock(state->skills_mutex);
+    std::lock_guard lock(state->skills.mutex);
     std::vector<SkillDiscoverySnapshot> updates;
-    updates.swap(state->skills_updates);
+    updates.swap(state->skills.updates);
     return updates;
 }
 
-void publish_copilot_skills(CopilotState* state, const CopilotStreamContext& context) {
+static void publish_copilot_skills(CopilotState* state, const CopilotStreamContext& context) {
     if (!context.available_commands_received)
         return;
     Json skill_list;
@@ -1096,12 +1065,12 @@ void publish_copilot_skills(CopilotState* state, const CopilotStreamContext& con
     SkillDiscoverySnapshot snapshot;
     snapshot.working_directory = context.working_directory;
     snapshot.entries = copilot_skill_entries(skill_list, context.available_commands);
-    std::lock_guard lock(state->skills_mutex);
-    if (!state->skills_stopping)
-        state->skills_updates.push_back(std::move(snapshot));
+    std::lock_guard lock(state->skills.mutex);
+    if (!state->skills.stopping)
+        state->skills.updates.push_back(std::move(snapshot));
 }
 
-void initialize_github_copilot(void* context, ProviderRuntime*) {
+static void initialize_github_copilot(void* context, ProviderRuntime*) {
     CopilotState* state = static_cast<CopilotState*>(context);
     ProviderAvailability availability = ProviderAvailability::Unavailable;
     std::filesystem::path location = child_process_resolve_executable(state->options.executable);
@@ -1113,19 +1082,19 @@ void initialize_github_copilot(void* context, ProviderRuntime*) {
     }
 
     {
-        std::lock_guard lock(state->startup_mutex);
-        state->startup_availability = availability;
-        state->startup_location = std::move(location);
-        state->startup_default_model = std::move(default_model);
-        state->startup_models = std::move(models);
-        state->startup_complete = true;
+        std::lock_guard lock(state->startup.mutex);
+        state->startup.availability = availability;
+        state->startup.location = std::move(location);
+        state->startup.default_model = std::move(default_model);
+        state->startup.models = std::move(models);
+        state->startup.complete = true;
     }
-    state->startup_ready.notify_all();
+    state->startup.ready.notify_all();
 }
 
 static std::string copilot_conversation_prompt(const TurnRequest* request) {
     std::string prompt;
-    for (const ChatMessage& message : request->history) {
+    for (const ProviderHistoryMessage& message : request->history) {
         prompt += message.role == ChatMessageRole::User ? "User: " : "Assistant: ";
         prompt += message.content;
         prompt += "\n\n";
@@ -1136,7 +1105,7 @@ static std::string copilot_conversation_prompt(const TurnRequest* request) {
     return prompt;
 }
 
-Json copilot_prompt_content(const TurnRequest* request, bool embedded_context) {
+static Json copilot_prompt_content(const TurnRequest* request, bool embedded_context) {
     Json content = Json::array();
     content.push_back({{"type", "text"}, {"text", copilot_conversation_prompt(request)}});
     for (const FileReference& reference : request->file_references) {
@@ -1197,7 +1166,7 @@ Json copilot_prompt_content(const TurnRequest* request, bool embedded_context) {
     return content;
 }
 
-Result run_github_copilot(CopilotState* state, const TurnRequest* request,
+static Result run_github_copilot(CopilotState* state, const TurnRequest* request,
                           ProviderRuntime* runtime) {
     child_process_ignore_sigpipe();
 
@@ -1224,10 +1193,10 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
         return result;
     }
     {
-        std::lock_guard lock(state->active_mutex);
-        auto& active = state->active_turns.at(request->turn_id);
+        std::lock_guard lock(state->processes.mutex);
+        auto& active = state->processes.active_turns.at(request->turn_id);
         active.process = &process;
-        if (active.cancelled || state->shutting_down)
+        if (active.cancelled || state->processes.shutting_down)
             child_process_terminate(&process);
     }
 
@@ -1316,8 +1285,8 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
     }
 
     {
-        std::lock_guard lock(state->active_mutex);
-        state->active_turns.at(request->turn_id).process = nullptr;
+        std::lock_guard lock(state->processes.mutex);
+        state->processes.active_turns.at(request->turn_id).process = nullptr;
     }
     publish_copilot_skills(state, context);
     child_process_stop(&process);
@@ -1334,7 +1303,7 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
     return result_ok();
 }
 
-void process_github_copilot(void* context, const TurnRequest* request,
+static void process_github_copilot(void* context, const TurnRequest* request,
                             ProviderRuntime* runtime) {
     CopilotState* state = static_cast<CopilotState*>(context);
     Result result = state->options.execute != nullptr
@@ -1348,9 +1317,9 @@ void process_github_copilot(void* context, const TurnRequest* request,
                         : run_github_copilot(state, request, runtime);
     bool cancelled = false;
     {
-        std::lock_guard lock(state->active_mutex);
-        cancelled = state->active_turns.at(request->turn_id).cancelled;
-        state->active_turns.erase(request->turn_id);
+        std::lock_guard lock(state->processes.mutex);
+        cancelled = state->processes.active_turns.at(request->turn_id).cancelled;
+        state->processes.active_turns.erase(request->turn_id);
     }
     if (cancelled)
         return;
@@ -1366,7 +1335,7 @@ void process_github_copilot(void* context, const TurnRequest* request,
     provider_runtime_emit(runtime, &completed);
 }
 
-std::string copilot_mcp_status_text(std::string status) {
+static std::string copilot_mcp_status_text(std::string status) {
     std::transform(status.begin(), status.end(), status.begin(), [](unsigned char character) {
         return static_cast<char>(std::tolower(character));
     });
@@ -1390,7 +1359,7 @@ std::string copilot_mcp_status_text(std::string status) {
     return status.empty() ? "Unknown" : status;
 }
 
-std::string copilot_source(const Json& entry, const std::string& source_hint) {
+static std::string copilot_source(const Json& entry, const std::string& source_hint) {
     if (entry.contains("source")) {
         if (entry["source"].is_string())
             return entry["source"].get<std::string>();
@@ -1400,7 +1369,7 @@ std::string copilot_source(const Json& entry, const std::string& source_hint) {
     return source_hint;
 }
 
-McpServer parse_copilot_mcp_server(const Json& entry, const std::string& source_hint) {
+static McpServer parse_copilot_mcp_server(const Json& entry, const std::string& source_hint) {
     McpServer server;
     server.name = string_value(entry, "name");
     server.source = copilot_source(entry, source_hint);
@@ -1489,7 +1458,7 @@ McpServer parse_copilot_mcp_server(const Json& entry, const std::string& source_
     return server;
 }
 
-void append_copilot_mcp_entries(const Json& value, const std::string& source_hint,
+static void append_copilot_mcp_entries(const Json& value, const std::string& source_hint,
                                std::vector<McpServer>* servers) {
     if (value.is_array()) {
         for (const Json& entry : value)
@@ -1537,16 +1506,16 @@ void append_copilot_mcp_entries(const Json& value, const std::string& source_hin
     }
 }
 
-Result run_copilot_mcp_cli(CopilotState* state,
+static Result run_copilot_mcp_cli(CopilotState* state,
                            const std::filesystem::path& working_directory,
                            const std::vector<std::string>& arguments,
                            std::string* output) {
     return provider_mcp_run_cli(state->options.executable, arguments,
-                                working_directory, output, &state->active_mutex,
-                                &state->mcp_process, &state->shutting_down);
+                                working_directory, output, &state->processes.mutex,
+                                &state->processes.mcp_process, &state->processes.shutting_down);
 }
 
-Result read_copilot_mcp_servers(CopilotState* state,
+static Result read_copilot_mcp_servers(CopilotState* state,
                                 const std::filesystem::path& working_directory,
                                 std::vector<McpServer>* servers) {
     std::string output;
@@ -1574,7 +1543,7 @@ Result read_copilot_mcp_servers(CopilotState* state,
     return result_ok();
 }
 
-std::vector<std::string> copilot_add_arguments(const McpServer& server) {
+static std::vector<std::string> copilot_add_arguments(const McpServer& server) {
     std::vector<std::string> arguments = {"mcp", "add"};
     if (server.transport == McpServerTransport::Http) {
         arguments.push_back("--transport");
@@ -1598,7 +1567,7 @@ std::vector<std::string> copilot_add_arguments(const McpServer& server) {
     return arguments;
 }
 
-Result remove_copilot_mcp_server(CopilotState* state,
+static Result remove_copilot_mcp_server(CopilotState* state,
                                  const std::filesystem::path& working_directory,
                                  std::string_view name) {
     std::string output;
@@ -1606,14 +1575,14 @@ Result remove_copilot_mcp_server(CopilotState* state,
                                {"mcp", "remove", std::string(name)}, &output);
 }
 
-Result list_copilot_mcp_servers(Provider* provider,
+static Result list_copilot_mcp_servers(Provider* provider,
                                const std::filesystem::path& working_directory,
                                std::vector<McpServer>* servers) {
     return read_copilot_mcp_servers(static_cast<CopilotState*>(provider->state),
                                     working_directory, servers);
 }
 
-Result upsert_copilot_mcp_server(Provider* provider,
+static Result upsert_copilot_mcp_server(Provider* provider,
                                  const std::filesystem::path& working_directory,
                                  std::string_view existing_name,
                                  const McpServer& server) {
@@ -1657,14 +1626,14 @@ Result upsert_copilot_mcp_server(Provider* provider,
     return added;
 }
 
-Result remove_copilot_mcp(Provider* provider,
+static Result remove_copilot_mcp(Provider* provider,
                           const std::filesystem::path& working_directory,
                           std::string_view name) {
     return remove_copilot_mcp_server(static_cast<CopilotState*>(provider->state),
                                      working_directory, name);
 }
 
-Result set_copilot_mcp_enabled(Provider* provider,
+static Result set_copilot_mcp_enabled(Provider* provider,
                                const std::filesystem::path& working_directory,
                                std::string_view name, bool enabled) {
     CopilotState* state = static_cast<CopilotState*>(provider->state);
@@ -1673,7 +1642,7 @@ Result set_copilot_mcp_enabled(Provider* provider,
         {"mcp", enabled ? "enable" : "disable", std::string(name)}, &output);
 }
 
-Result start_github_copilot(Provider* provider) {
+static Result start_github_copilot(Provider* provider) {
     CopilotState* state = static_cast<CopilotState*>(provider->state);
     provider->default_model = state->options.default_model;
     provider->models.push_back({provider->default_model, "Auto", {}, {}, {}, {}});
@@ -1685,10 +1654,10 @@ Result start_github_copilot(Provider* provider) {
     if (result.status == ResultStatus::Error)
         return result;
     if (state->options.execute == nullptr) {
-        state->usage_worker = std::thread(run_copilot_usage, state);
+        state->usage.worker = std::thread(run_copilot_usage, state);
         provider->request_usage = request_copilot_usage;
         provider->poll_usage = poll_copilot_usage;
-        state->skills_worker = std::thread(run_copilot_skills, state);
+        state->skills.worker = std::thread(run_copilot_skills, state);
         provider->request_skills = request_copilot_skills;
         provider->poll_skills = poll_copilot_skills;
         provider->list_mcp_servers = list_copilot_mcp_servers;
@@ -1699,97 +1668,71 @@ Result start_github_copilot(Provider* provider) {
     return result_ok();
 }
 
-Result submit_github_copilot(Provider* provider, TurnRequest request) {
+static Result submit_github_copilot(Provider* provider, TurnRequest request) {
     CopilotState* state = static_cast<CopilotState*>(provider->state);
+    if (request.turn_id == 0)
+        return result_error("A turn must have a caller-assigned ID");
     const TurnId turn_id = request.turn_id;
     {
-        std::lock_guard lock(state->active_mutex);
-        state->active_turns.emplace(turn_id, CopilotState::ActiveTurn{});
+        std::lock_guard lock(state->processes.mutex);
+        state->processes.active_turns.emplace(turn_id, ProviderProcesses::ActiveTurn{});
     }
     Result result = provider_runtime_submit(&state->runtime, std::move(request));
     if (result.status == ResultStatus::Error) {
-        std::lock_guard lock(state->active_mutex);
-        state->active_turns.erase(turn_id);
+        std::lock_guard lock(state->processes.mutex);
+        state->processes.active_turns.erase(turn_id);
     }
     return result;
 }
 
-Result respond_github_copilot(Provider*, const ProviderRequestId&, ApprovalDecision) {
+static Result respond_github_copilot(Provider*, const ProviderRequestId&, ApprovalDecision) {
     return result_error("GitHub Copilot has no pending approval request");
 }
 
-void cancel_github_copilot(Provider* provider, TurnId turn_id) {
+static void cancel_github_copilot(Provider* provider, TurnId turn_id) {
     CopilotState* state = static_cast<CopilotState*>(provider->state);
-    const bool queued = provider_runtime_cancel_queued(&state->runtime, turn_id);
-    std::lock_guard lock(state->active_mutex);
-    if (queued) {
-        state->active_turns.erase(turn_id);
-        return;
-    }
-    auto active = state->active_turns.find(turn_id);
-    if (active == state->active_turns.end())
-        return;
-    active->second.cancelled = true;
-    if (active->second.process != nullptr && child_process_running(active->second.process))
-        child_process_terminate(active->second.process);
+    provider_processes_cancel(&state->processes, &state->runtime, turn_id);
 }
 
-std::vector<Event> poll_github_copilot(Provider* provider) {
+static std::vector<Event> poll_github_copilot(Provider* provider) {
     CopilotState* state = static_cast<CopilotState*>(provider->state);
     {
-        std::lock_guard lock(state->startup_mutex);
-        if (state->startup_complete && !state->startup_applied) {
-            provider->availability = state->startup_availability;
-            provider->location = state->startup_location;
-            provider->default_model = std::move(state->startup_default_model);
-            if (!state->startup_models.empty())
-                provider->models = std::move(state->startup_models);
-            state->startup_applied = true;
+        std::lock_guard lock(state->startup.mutex);
+        if (state->startup.complete && !state->startup.applied) {
+            provider->availability = state->startup.availability;
+            provider->location = state->startup.location;
+            provider->default_model = std::move(state->startup.default_model);
+            if (!state->startup.models.empty())
+                provider->models = std::move(state->startup.models);
+            state->startup.applied = true;
         }
     }
     return provider_runtime_poll_events(&state->runtime);
 }
 
-void request_github_copilot_shutdown(Provider* provider) {
+static void request_github_copilot_shutdown(Provider* provider) {
     CopilotState* state = static_cast<CopilotState*>(provider->state);
+    provider_processes_request_shutdown(&state->processes);
     {
-        std::lock_guard lock(state->active_mutex);
-        state->shutting_down = true;
-        for (auto& [id, active] : state->active_turns)
-            if (active.process != nullptr && child_process_running(active.process))
-                child_process_terminate(active.process);
-        if (state->startup_process != nullptr && child_process_running(state->startup_process))
-            child_process_terminate(state->startup_process);
-        if (state->usage_process != nullptr && child_process_running(state->usage_process))
-            child_process_terminate(state->usage_process);
-        if (state->skills_process != nullptr && child_process_running(state->skills_process))
-            child_process_terminate(state->skills_process);
-        if (state->skills_cli_process != nullptr &&
-            child_process_running(state->skills_cli_process))
-            child_process_terminate(state->skills_cli_process);
-        if (state->mcp_process != nullptr && child_process_running(state->mcp_process))
-            child_process_terminate(state->mcp_process);
+        std::lock_guard lock(state->usage.mutex);
+        state->usage.stopping = true;
     }
+    state->usage.ready.notify_all();
     {
-        std::lock_guard lock(state->usage_mutex);
-        state->usage_stopping = true;
+        std::lock_guard lock(state->skills.mutex);
+        state->skills.stopping = true;
     }
-    state->usage_ready.notify_all();
-    {
-        std::lock_guard lock(state->skills_mutex);
-        state->skills_stopping = true;
-    }
-    state->skills_ready.notify_all();
+    state->skills.ready.notify_all();
     provider_runtime_request_shutdown(&state->runtime);
 }
 
-void destroy_github_copilot(Provider* provider) {
+static void destroy_github_copilot(Provider* provider) {
     CopilotState* state = static_cast<CopilotState*>(provider->state);
     request_github_copilot_shutdown(provider);
-    if (state->usage_worker.joinable())
-        state->usage_worker.join();
-    if (state->skills_worker.joinable())
-        state->skills_worker.join();
+    if (state->usage.worker.joinable())
+        state->usage.worker.join();
+    if (state->skills.worker.joinable())
+        state->skills.worker.join();
     provider_runtime_shutdown(&state->runtime);
     delete state;
     delete provider;

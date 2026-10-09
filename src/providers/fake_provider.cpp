@@ -6,7 +6,7 @@ struct FakeState {
     ProviderRuntime runtime;
 };
 
-void process_fake(void*, const TurnRequest* request, ProviderRuntime* runtime) {
+static void process_fake(void*, const TurnRequest* request, ProviderRuntime* runtime) {
     const Event response{EventKind::AssistantTextDelta,
                          request->conversation_id,
                          request->turn_id,
@@ -20,35 +20,35 @@ void process_fake(void*, const TurnRequest* request, ProviderRuntime* runtime) {
     provider_runtime_emit(runtime, &completed);
 }
 
-Result start_fake(Provider* provider) {
+static Result start_fake(Provider* provider) {
     FakeState* state = static_cast<FakeState*>(provider->state);
     return provider_runtime_start(&state->runtime);
 }
 
-Result submit_fake(Provider* provider, TurnRequest request) {
+static Result submit_fake(Provider* provider, TurnRequest request) {
     FakeState* state = static_cast<FakeState*>(provider->state);
     return provider_runtime_submit(&state->runtime, std::move(request));
 }
 
-Result respond_fake(Provider*, const ProviderRequestId&, ApprovalDecision) {
+static Result respond_fake(Provider*, const ProviderRequestId&, ApprovalDecision) {
     return result_error("Provider has no pending approval request");
 }
 
-void cancel_fake(Provider*, TurnId) {}
+static void cancel_fake(Provider*, TurnId) {}
 
-std::vector<Event> poll_fake(Provider* provider) {
+static std::vector<Event> poll_fake(Provider* provider) {
     FakeState* state = static_cast<FakeState*>(provider->state);
     return provider_runtime_poll_events(&state->runtime);
 }
 
-void destroy_fake(Provider* provider) {
+static void destroy_fake(Provider* provider) {
     FakeState* state = static_cast<FakeState*>(provider->state);
     provider_runtime_shutdown(&state->runtime);
     delete state;
     delete provider;
 }
 
-void request_fake_shutdown(Provider* provider) {
+static void request_fake_shutdown(Provider* provider) {
     FakeState* state = static_cast<FakeState*>(provider->state);
     provider_runtime_request_shutdown(&state->runtime);
 }

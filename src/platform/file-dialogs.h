@@ -18,6 +18,7 @@ struct FileDialogResult {
     FileDialogPurpose purpose;
     std::vector<std::filesystem::path> paths;
     std::string error;
+    std::string conversation_id;
 };
 
 struct FileDialogQueue {
@@ -27,7 +28,8 @@ struct FileDialogQueue {
 
 void show_file_dialog(const std::shared_ptr<FileDialogQueue>& queue,
                       FileDialogPurpose purpose, SDL_Window* window,
-                      const char* default_location = nullptr);
+                      const char* default_location = nullptr,
+                      std::string conversation_id = {});
 std::vector<FileDialogResult> take_file_dialog_results(FileDialogQueue& queue);
 
 #endif

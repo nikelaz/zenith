@@ -20,7 +20,7 @@
 using Json = nlohmann::json;
 
 
-const std::vector<PermissionOption>& codex_permission_modes() {
+static const std::vector<PermissionOption>& codex_permission_modes() {
     static const std::vector<PermissionOption> modes = {
         {"read-only", "Read only", "Allow reading files without making changes."},
         {"workspace-write", "Workspace", "Allow changes within the working directory."},
@@ -47,7 +47,7 @@ static std::string codex_json_text(const Json& value) {
     return value.dump(2);
 }
 
-bool is_tool_item(const std::string& type) {
+static bool is_tool_item(const std::string& type) {
     return type == "commandExecution" || type == "fileChange" || type == "mcpToolCall" ||
            type == "dynamicToolCall" || type == "webSearch";
 }
@@ -55,41 +55,11 @@ bool is_tool_item(const std::string& type) {
 struct CodexState {
     ProviderRuntime runtime;
     CodexOptions options;
-    std::mutex active_mutex;
-    struct ActiveTurn {
-        ChildProcess* process = nullptr;
-        bool cancelled = false;
-    };
-    std::map<TurnId, ActiveTurn> active_turns;
-    ChildProcess* startup_process = nullptr;
-    ChildProcess* mcp_process = nullptr;
-    bool shutting_down = false;
-    std::mutex startup_mutex;
-    std::condition_variable startup_ready;
-    bool startup_complete = false;
-    bool startup_applied = false;
-    ProviderAvailability startup_availability = ProviderAvailability::Unknown;
-    std::filesystem::path startup_location;
-    std::vector<ModelOption> startup_models;
-    std::mutex usage_mutex;
-    std::condition_variable usage_ready;
-    bool usage_requested = false;
-    bool usage_updated = false;
-    bool usage_stopping = false;
-    UsageSnapshot usage_snapshot;
-    std::thread usage_worker;
-    ChildProcess* usage_process = nullptr;
-    std::mutex skills_mutex;
-    std::condition_variable skills_ready;
-    struct SkillsRequest {
-        std::filesystem::path working_directory;
-        bool force_reload = false;
-    };
-    std::deque<SkillsRequest> skills_requests;
-    std::vector<SkillDiscoverySnapshot> skills_updates;
-    bool skills_stopping = false;
-    std::thread skills_worker;
-    ChildProcess* skills_process = nullptr;
+    ProviderProcesses processes;
+    ProviderStartupState startup;
+    ProviderUsageState usage;
+    ProviderSkillsState skills;
+
 };
 
 struct CodexStreamContext {
@@ -100,7 +70,7 @@ struct CodexStreamContext {
     std::string error;
 };
 
-Event make_tool_activity_event(CodexStreamContext* context, const Json& item, bool completed) {
+static Event make_tool_activity_event(CodexStreamContext* context, const Json& item, bool completed) {
     const std::string type = string_value(item, "type");
     Event event{EventKind::ToolActivity, context->request->conversation_id,
                 context->request->turn_id};
@@ -163,7 +133,7 @@ Event make_tool_activity_event(CodexStreamContext* context, const Json& item, bo
     return event;
 }
 
-Result start_codex_process(const CodexOptions* options, ChildProcess* process,
+static Result start_codex_process(const CodexOptions* options, ChildProcess* process,
                           const std::filesystem::path& working_directory = {}) {
     const std::filesystem::path executable =
         child_process_resolve_executable(options->executable);
@@ -199,13 +169,13 @@ static bool codex_read_message(FILE* output, Json* message) {
     return true;
 }
 
-void emit_stream_event(CodexStreamContext* context, EventKind kind, std::string text) {
+static void emit_stream_event(CodexStreamContext* context, EventKind kind, std::string text) {
     const Event event{kind, context->request->conversation_id, context->request->turn_id,
                       std::move(text), {}, {}};
     provider_runtime_emit(context->runtime, &event);
 }
 
-void handle_server_message(CodexStreamContext* context, const Json& message) {
+static void handle_server_message(CodexStreamContext* context, const Json& message) {
     if (!message.contains("method"))
         return;
 
@@ -274,15 +244,15 @@ static bool codex_wait_for_response(ChildProcess* process, int request_id, Codex
     }
 }
 
-std::string usage_reset_time(std::int64_t timestamp) {
+static std::string usage_reset_time(std::int64_t timestamp) {
     return usage_time::format_utc(static_cast<std::time_t>(timestamp));
 }
 
-std::string usage_update_time() {
+static std::string usage_update_time() {
     return usage_time::format_utc(std::time(nullptr));
 }
 
-UsageSnapshot parse_codex_usage(const Json& result) {
+static UsageSnapshot parse_codex_usage(const Json& result) {
     UsageSnapshot snapshot;
     const Json rate_limits = result.value("rateLimits", Json::object());
     const std::string plan = string_value(rate_limits, "planType");
@@ -334,16 +304,16 @@ UsageSnapshot parse_codex_usage(const Json& result) {
     return snapshot;
 }
 
-bool fetch_codex_usage(CodexState* state, UsageSnapshot* snapshot) {
+static bool fetch_codex_usage(CodexState* state, UsageSnapshot* snapshot) {
     ChildProcess process;
     if (start_codex_process(&state->options, &process).status == ResultStatus::Error) {
         child_process_stop(&process);
         return false;
     }
     {
-        std::lock_guard lock(state->active_mutex);
-        state->usage_process = &process;
-        if (state->shutting_down)
+        std::lock_guard lock(state->processes.mutex);
+        state->processes.usage_process = &process;
+        if (state->processes.shutting_down)
             child_process_terminate(&process);
     }
 
@@ -366,60 +336,60 @@ bool fetch_codex_usage(CodexState* state, UsageSnapshot* snapshot) {
         *snapshot = parse_codex_usage(response.value("result", Json::object()));
 
     {
-        std::lock_guard lock(state->active_mutex);
-        if (state->usage_process == &process)
-            state->usage_process = nullptr;
+        std::lock_guard lock(state->processes.mutex);
+        if (state->processes.usage_process == &process)
+            state->processes.usage_process = nullptr;
     }
     child_process_stop(&process);
     return success;
 }
 
-void run_codex_usage(void* context) {
+static void run_codex_usage(void* context) {
     CodexState* state = static_cast<CodexState*>(context);
     for (;;) {
         {
-            std::unique_lock lock(state->usage_mutex);
-            state->usage_ready.wait(lock, [state] {
-                return state->usage_stopping || state->usage_requested;
+            std::unique_lock lock(state->usage.mutex);
+            state->usage.ready.wait(lock, [state] {
+                return state->usage.stopping || state->usage.requested;
             });
-            if (state->usage_stopping)
+            if (state->usage.stopping)
                 return;
-            state->usage_requested = false;
+            state->usage.requested = false;
         }
 
         UsageSnapshot snapshot;
         if (!fetch_codex_usage(state, &snapshot))
             continue;
-        std::lock_guard lock(state->usage_mutex);
+        std::lock_guard lock(state->usage.mutex);
         snapshot.updated_at = usage_update_time();
-        state->usage_snapshot = std::move(snapshot);
-        state->usage_updated = true;
+        state->usage.snapshot = std::move(snapshot);
+        state->usage.updated = true;
     }
 }
 
-void request_codex_usage(Provider* provider) {
+static void request_codex_usage(Provider* provider) {
     CodexState* state = static_cast<CodexState*>(provider->state);
     {
-        std::lock_guard lock(state->usage_mutex);
-        if (state->usage_stopping)
+        std::lock_guard lock(state->usage.mutex);
+        if (state->usage.stopping)
             return;
-        state->usage_requested = true;
+        state->usage.requested = true;
     }
-    state->usage_ready.notify_one();
+    state->usage.ready.notify_one();
 }
 
-std::optional<UsageSnapshot> poll_codex_usage(Provider* provider) {
+static std::optional<UsageSnapshot> poll_codex_usage(Provider* provider) {
     CodexState* state = static_cast<CodexState*>(provider->state);
-    std::lock_guard lock(state->usage_mutex);
-    if (!state->usage_updated)
+    std::lock_guard lock(state->usage.mutex);
+    if (!state->usage.updated)
         return std::nullopt;
-    state->usage_updated = false;
-    return state->usage_snapshot;
+    state->usage.updated = false;
+    return state->usage.snapshot;
 }
 
 static std::string codex_conversation_prompt(const TurnRequest* request) {
     std::string prompt;
-    for (const ChatMessage& message : request->history) {
+    for (const ProviderHistoryMessage& message : request->history) {
         prompt += message.role == ChatMessageRole::User ? "User: " : "Assistant: ";
         prompt += message.content;
         prompt += "\n\n";
@@ -430,7 +400,7 @@ static std::string codex_conversation_prompt(const TurnRequest* request) {
     return prompt;
 }
 
-Json codex_prompt_content(const TurnRequest* request) {
+static Json codex_prompt_content(const TurnRequest* request) {
     Json content = Json::array();
     content.push_back({{"type", "text"}, {"text", codex_conversation_prompt(request)}});
     for (const FileReference& reference : request->file_references) {
@@ -473,7 +443,7 @@ Json codex_prompt_content(const TurnRequest* request) {
     return content;
 }
 
-std::vector<ModelOption> fetch_codex_models(CodexState* state,
+static std::vector<ModelOption> fetch_codex_models(CodexState* state,
                                             ProviderRuntime* runtime,
                                             ProviderAvailability* availability) {
     child_process_ignore_sigpipe();
@@ -486,9 +456,9 @@ std::vector<ModelOption> fetch_codex_models(CodexState* state,
         return models;
     }
     {
-        std::lock_guard lock(state->active_mutex);
-        state->startup_process = &process;
-        if (state->shutting_down)
+        std::lock_guard lock(state->processes.mutex);
+        state->processes.startup_process = &process;
+        if (state->processes.shutting_down)
             child_process_terminate(&process);
     }
 
@@ -557,9 +527,9 @@ std::vector<ModelOption> fetch_codex_models(CodexState* state,
     }
 
     {
-        std::lock_guard lock(state->active_mutex);
-        if (state->startup_process == &process)
-            state->startup_process = nullptr;
+        std::lock_guard lock(state->processes.mutex);
+        if (state->processes.startup_process == &process)
+            state->processes.startup_process = nullptr;
     }
     child_process_stop(&process);
     for (ModelOption& model : models)
@@ -567,7 +537,7 @@ std::vector<ModelOption> fetch_codex_models(CodexState* state,
     return models;
 }
 
-SkillDiscoverySnapshot fetch_codex_skills(CodexState* state,
+static SkillDiscoverySnapshot fetch_codex_skills(CodexState* state,
                                           const std::filesystem::path& working_directory,
                                           bool force_reload) {
     SkillDiscoverySnapshot snapshot;
@@ -581,9 +551,9 @@ SkillDiscoverySnapshot fetch_codex_skills(CodexState* state,
         return snapshot;
     }
     {
-        std::lock_guard lock(state->active_mutex);
-        state->skills_process = &process;
-        if (state->shutting_down)
+        std::lock_guard lock(state->processes.mutex);
+        state->processes.skills_process = &process;
+        if (state->processes.shutting_down)
             child_process_terminate(&process);
     }
 
@@ -653,74 +623,74 @@ SkillDiscoverySnapshot fetch_codex_skills(CodexState* state,
     }
 
     {
-        std::lock_guard lock(state->active_mutex);
-        if (state->skills_process == &process)
-            state->skills_process = nullptr;
+        std::lock_guard lock(state->processes.mutex);
+        if (state->processes.skills_process == &process)
+            state->processes.skills_process = nullptr;
     }
     child_process_stop(&process);
     return snapshot;
 }
 
-void run_codex_skills(void* context) {
+static void run_codex_skills(void* context) {
     CodexState* state = static_cast<CodexState*>(context);
     for (;;) {
-        CodexState::SkillsRequest request;
+        ProviderSkillsRequest request;
         {
-            std::unique_lock lock(state->skills_mutex);
-            state->skills_ready.wait(lock, [state] {
-                return state->skills_stopping || !state->skills_requests.empty();
+            std::unique_lock lock(state->skills.mutex);
+            state->skills.ready.wait(lock, [state] {
+                return state->skills.stopping || !state->skills.requests.empty();
             });
-            if (state->skills_stopping)
+            if (state->skills.stopping)
                 return;
-            request = std::move(state->skills_requests.front());
-            state->skills_requests.pop_front();
+            request = std::move(state->skills.requests.front());
+            state->skills.requests.pop_front();
         }
 
         {
-            std::unique_lock lock(state->startup_mutex);
-            state->startup_ready.wait(lock, [state] { return state->startup_complete; });
+            std::unique_lock lock(state->startup.mutex);
+            state->startup.ready.wait(lock, [state] { return state->startup.complete; });
         }
         {
-            std::lock_guard lock(state->skills_mutex);
-            if (state->skills_stopping)
+            std::lock_guard lock(state->skills.mutex);
+            if (state->skills.stopping)
                 return;
         }
 
         SkillDiscoverySnapshot snapshot = fetch_codex_skills(
             state, request.working_directory, request.force_reload);
-        std::lock_guard lock(state->skills_mutex);
-        state->skills_updates.push_back(std::move(snapshot));
+        std::lock_guard lock(state->skills.mutex);
+        state->skills.updates.push_back(std::move(snapshot));
     }
 }
 
-Result request_codex_skills(Provider* provider,
+static Result request_codex_skills(Provider* provider,
                             const std::filesystem::path& working_directory,
                             bool force_reload) {
     CodexState* state = static_cast<CodexState*>(provider->state);
     {
-        std::lock_guard lock(state->skills_mutex);
-        if (state->skills_stopping)
+        std::lock_guard lock(state->skills.mutex);
+        if (state->skills.stopping)
             return result_error("Codex skill discovery is stopping");
-        state->skills_requests.push_back({working_directory, force_reload});
+        state->skills.requests.push_back({working_directory, force_reload});
     }
-    state->skills_ready.notify_one();
+    state->skills.ready.notify_one();
     return result_ok();
 }
 
-std::vector<SkillDiscoverySnapshot> poll_codex_skills(Provider* provider) {
+static std::vector<SkillDiscoverySnapshot> poll_codex_skills(Provider* provider) {
     CodexState* state = static_cast<CodexState*>(provider->state);
-    std::lock_guard lock(state->skills_mutex);
+    std::lock_guard lock(state->skills.mutex);
     std::vector<SkillDiscoverySnapshot> updates;
-    updates.swap(state->skills_updates);
+    updates.swap(state->skills.updates);
     return updates;
 }
 
-std::string json_string(const Json& value, const char* key) {
+static std::string json_string(const Json& value, const char* key) {
     return value.contains(key) && value[key].is_string()
         ? value[key].get<std::string>() : std::string{};
 }
 
-std::string mcp_status_text(std::string status) {
+static std::string mcp_status_text(std::string status) {
     std::transform(status.begin(), status.end(), status.begin(), [](unsigned char character) {
         return static_cast<char>(std::tolower(character));
     });
@@ -743,14 +713,14 @@ std::string mcp_status_text(std::string status) {
     return status.empty() ? "Unknown" : status;
 }
 
-Result run_codex_mcp_cli(CodexState* state, const std::filesystem::path& working_directory,
+static Result run_codex_mcp_cli(CodexState* state, const std::filesystem::path& working_directory,
                          const std::vector<std::string>& arguments, std::string* output) {
     return provider_mcp_run_cli(state->options.executable, arguments, working_directory,
-                                output, &state->active_mutex, &state->mcp_process,
-                                &state->shutting_down);
+                                output, &state->processes.mutex, &state->processes.mcp_process,
+                                &state->processes.shutting_down);
 }
 
-Result read_codex_mcp_config(CodexState* state,
+static Result read_codex_mcp_config(CodexState* state,
                              const std::filesystem::path& working_directory,
                              std::vector<McpServer>* servers) {
     std::string output;
@@ -843,7 +813,7 @@ Result read_codex_mcp_config(CodexState* state,
     return result_ok();
 }
 
-Result query_codex_mcp_status(CodexState* state,
+static Result query_codex_mcp_status(CodexState* state,
                               const std::filesystem::path& working_directory,
                               std::map<std::string, std::pair<std::string, std::string>>* statuses) {
     ChildProcess process;
@@ -853,9 +823,9 @@ Result query_codex_mcp_status(CodexState* state,
         return started;
     }
     {
-        std::lock_guard lock(state->active_mutex);
-        state->mcp_process = &process;
-        if (state->shutting_down)
+        std::lock_guard lock(state->processes.mutex);
+        state->processes.mcp_process = &process;
+        if (state->processes.shutting_down)
             child_process_terminate(&process);
     }
 
@@ -884,9 +854,9 @@ Result query_codex_mcp_status(CodexState* state,
     const bool success = timed_out ? false : status_future.get();
     status_thread.join();
     {
-        std::lock_guard lock(state->active_mutex);
-        if (state->mcp_process == &process)
-            state->mcp_process = nullptr;
+        std::lock_guard lock(state->processes.mutex);
+        if (state->processes.mcp_process == &process)
+            state->processes.mcp_process = nullptr;
     }
     child_process_stop(&process);
     if (timed_out)
@@ -915,7 +885,7 @@ Result query_codex_mcp_status(CodexState* state,
     return result_ok();
 }
 
-Result list_codex_mcp_servers(Provider* provider,
+static Result list_codex_mcp_servers(Provider* provider,
                              const std::filesystem::path& working_directory,
                              std::vector<McpServer>* servers) {
     CodexState* state = static_cast<CodexState*>(provider->state);
@@ -942,7 +912,7 @@ Result list_codex_mcp_servers(Provider* provider,
     return result_ok();
 }
 
-std::vector<std::string> codex_add_arguments(const McpServer& server) {
+static std::vector<std::string> codex_add_arguments(const McpServer& server) {
     std::vector<std::string> arguments = {"mcp", "add"};
     if (server.transport == McpServerTransport::Http) {
         arguments.push_back(server.name);
@@ -965,7 +935,7 @@ std::vector<std::string> codex_add_arguments(const McpServer& server) {
     return arguments;
 }
 
-Result remove_codex_mcp_server(CodexState* state,
+static Result remove_codex_mcp_server(CodexState* state,
                                const std::filesystem::path& working_directory,
                                std::string_view name) {
     std::string output;
@@ -973,7 +943,7 @@ Result remove_codex_mcp_server(CodexState* state,
                              {"mcp", "remove", std::string(name)}, &output);
 }
 
-Result upsert_codex_mcp_server(Provider* provider,
+static Result upsert_codex_mcp_server(Provider* provider,
                               const std::filesystem::path& working_directory,
                               std::string_view existing_name, const McpServer& server) {
     CodexState* state = static_cast<CodexState*>(provider->state);
@@ -1015,7 +985,7 @@ Result upsert_codex_mcp_server(Provider* provider,
     return added;
 }
 
-Result remove_codex_mcp(Provider* provider,
+static Result remove_codex_mcp(Provider* provider,
                         const std::filesystem::path& working_directory,
                         std::string_view name) {
     return remove_codex_mcp_server(static_cast<CodexState*>(provider->state),
@@ -1023,7 +993,7 @@ Result remove_codex_mcp(Provider* provider,
 }
 
 
-void initialize_codex(void* context, ProviderRuntime* runtime) {
+static void initialize_codex(void* context, ProviderRuntime* runtime) {
     CodexState* state = static_cast<CodexState*>(context);
     ProviderAvailability availability = ProviderAvailability::Unavailable;
     std::filesystem::path location;
@@ -1038,16 +1008,16 @@ void initialize_codex(void* context, ProviderRuntime* runtime) {
     }
 
     {
-        std::lock_guard lock(state->startup_mutex);
-        state->startup_availability = availability;
-        state->startup_location = std::move(location);
-        state->startup_models = std::move(models);
-        state->startup_complete = true;
+        std::lock_guard lock(state->startup.mutex);
+        state->startup.availability = availability;
+        state->startup.location = std::move(location);
+        state->startup.models = std::move(models);
+        state->startup.complete = true;
     }
-    state->startup_ready.notify_all();
+    state->startup.ready.notify_all();
 }
 
-Result run_codex(CodexState* state, const TurnRequest* request,
+static Result run_codex(CodexState* state, const TurnRequest* request,
                  ProviderRuntime* runtime) {
     const CodexOptions* options = &state->options;
     child_process_ignore_sigpipe();
@@ -1060,10 +1030,10 @@ Result run_codex(CodexState* state, const TurnRequest* request,
     }
 
     {
-        std::lock_guard lock(state->active_mutex);
-        auto& active = state->active_turns.at(request->turn_id);
+        std::lock_guard lock(state->processes.mutex);
+        auto& active = state->processes.active_turns.at(request->turn_id);
         active.process = &process;
-        if (active.cancelled || state->shutting_down)
+        if (active.cancelled || state->processes.shutting_down)
             child_process_terminate(&process);
     }
 
@@ -1141,8 +1111,8 @@ Result run_codex(CodexState* state, const TurnRequest* request,
     }
 
     {
-        std::lock_guard lock(state->active_mutex);
-        state->active_turns.at(request->turn_id).process = nullptr;
+        std::lock_guard lock(state->processes.mutex);
+        state->processes.active_turns.at(request->turn_id).process = nullptr;
     }
     child_process_stop(&process);
     if (!success)
@@ -1152,7 +1122,7 @@ Result run_codex(CodexState* state, const TurnRequest* request,
     return result_ok();
 }
 
-void process_codex(void* context, const TurnRequest* request, ProviderRuntime* runtime) {
+static void process_codex(void* context, const TurnRequest* request, ProviderRuntime* runtime) {
     CodexState* state = static_cast<CodexState*>(context);
     Result result = state->options.execute != nullptr
                         ? state->options.execute(state->options.execute_context, request,
@@ -1164,9 +1134,9 @@ void process_codex(void* context, const TurnRequest* request, ProviderRuntime* r
                         : run_codex(state, request, runtime);
     bool cancelled = false;
     {
-        std::lock_guard lock(state->active_mutex);
-        cancelled = state->active_turns.at(request->turn_id).cancelled;
-        state->active_turns.erase(request->turn_id);
+        std::lock_guard lock(state->processes.mutex);
+        cancelled = state->processes.active_turns.at(request->turn_id).cancelled;
+        state->processes.active_turns.erase(request->turn_id);
     }
     if (cancelled)
         return;
@@ -1182,7 +1152,7 @@ void process_codex(void* context, const TurnRequest* request, ProviderRuntime* r
     provider_runtime_emit(runtime, &completed);
 }
 
-Result start_codex(Provider* provider) {
+static Result start_codex(Provider* provider) {
     CodexState* state = static_cast<CodexState*>(provider->state);
     provider->default_model = state->options.default_model;
     provider->models.push_back({state->options.default_model,
@@ -1196,10 +1166,10 @@ Result start_codex(Provider* provider) {
     if (result.status == ResultStatus::Error)
         return result;
     if (state->options.execute == nullptr) {
-        state->usage_worker = std::thread(run_codex_usage, state);
+        state->usage.worker = std::thread(run_codex_usage, state);
         provider->request_usage = request_codex_usage;
         provider->poll_usage = poll_codex_usage;
-        state->skills_worker = std::thread(run_codex_skills, state);
+        state->skills.worker = std::thread(run_codex_skills, state);
         provider->request_skills = request_codex_skills;
         provider->poll_skills = poll_codex_skills;
         provider->list_mcp_servers = list_codex_mcp_servers;
@@ -1209,93 +1179,70 @@ Result start_codex(Provider* provider) {
     return result_ok();
 }
 
-Result submit_codex(Provider* provider, TurnRequest request) {
+static Result submit_codex(Provider* provider, TurnRequest request) {
     CodexState* state = static_cast<CodexState*>(provider->state);
+    if (request.turn_id == 0)
+        return result_error("A turn must have a caller-assigned ID");
     const TurnId turn_id = request.turn_id;
     {
-        std::lock_guard lock(state->active_mutex);
-        state->active_turns.emplace(turn_id, CodexState::ActiveTurn{});
+        std::lock_guard lock(state->processes.mutex);
+        state->processes.active_turns.emplace(turn_id, ProviderProcesses::ActiveTurn{});
     }
     Result result = provider_runtime_submit(&state->runtime, std::move(request));
     if (result.status == ResultStatus::Error) {
-        std::lock_guard lock(state->active_mutex);
-        state->active_turns.erase(turn_id);
+        std::lock_guard lock(state->processes.mutex);
+        state->processes.active_turns.erase(turn_id);
     }
     return result;
 }
 
-Result respond_codex(Provider*, const ProviderRequestId&, ApprovalDecision) {
+static Result respond_codex(Provider*, const ProviderRequestId&, ApprovalDecision) {
     return result_error("Provider has no pending approval request");
 }
 
-void cancel_codex(Provider* provider, TurnId turn_id) {
+static void cancel_codex(Provider* provider, TurnId turn_id) {
     CodexState* state = static_cast<CodexState*>(provider->state);
-    const bool queued = provider_runtime_cancel_queued(&state->runtime, turn_id);
-    std::lock_guard lock(state->active_mutex);
-    if (queued) {
-        state->active_turns.erase(turn_id);
-        return;
-    }
-    auto active = state->active_turns.find(turn_id);
-    if (turn_id == 0 || active == state->active_turns.end())
-        return;
-    active->second.cancelled = true;
-    if (active->second.process != nullptr && child_process_running(active->second.process))
-        child_process_terminate(active->second.process);
+    provider_processes_cancel(&state->processes, &state->runtime, turn_id);
 }
 
-std::vector<Event> poll_codex(Provider* provider) {
+static std::vector<Event> poll_codex(Provider* provider) {
     CodexState* state = static_cast<CodexState*>(provider->state);
     {
-        std::lock_guard lock(state->startup_mutex);
-        if (state->startup_complete && !state->startup_applied) {
-            provider->availability = state->startup_availability;
-            provider->location = std::move(state->startup_location);
-            if (!state->startup_models.empty())
-                provider->models = std::move(state->startup_models);
-            state->startup_applied = true;
+        std::lock_guard lock(state->startup.mutex);
+        if (state->startup.complete && !state->startup.applied) {
+            provider->availability = state->startup.availability;
+            provider->location = std::move(state->startup.location);
+            if (!state->startup.models.empty())
+                provider->models = std::move(state->startup.models);
+            state->startup.applied = true;
         }
     }
     return provider_runtime_poll_events(&state->runtime);
 }
 
-void request_codex_shutdown(Provider* provider) {
+static void request_codex_shutdown(Provider* provider) {
     CodexState* state = static_cast<CodexState*>(provider->state);
+    provider_processes_request_shutdown(&state->processes);
     {
-        std::lock_guard lock(state->active_mutex);
-        state->shutting_down = true;
-        for (auto& [id, active] : state->active_turns)
-            if (active.process != nullptr && child_process_running(active.process))
-                child_process_terminate(active.process);
-        if (state->startup_process != nullptr && child_process_running(state->startup_process))
-            child_process_terminate(state->startup_process);
-        if (state->usage_process != nullptr && child_process_running(state->usage_process))
-            child_process_terminate(state->usage_process);
-        if (state->skills_process != nullptr && child_process_running(state->skills_process))
-            child_process_terminate(state->skills_process);
-        if (state->mcp_process != nullptr && child_process_running(state->mcp_process))
-            child_process_terminate(state->mcp_process);
+        std::lock_guard lock(state->usage.mutex);
+        state->usage.stopping = true;
     }
+    state->usage.ready.notify_all();
     {
-        std::lock_guard lock(state->usage_mutex);
-        state->usage_stopping = true;
+        std::lock_guard lock(state->skills.mutex);
+        state->skills.stopping = true;
     }
-    state->usage_ready.notify_all();
-    {
-        std::lock_guard lock(state->skills_mutex);
-        state->skills_stopping = true;
-    }
-    state->skills_ready.notify_all();
+    state->skills.ready.notify_all();
     provider_runtime_request_shutdown(&state->runtime);
 }
 
-void destroy_codex(Provider* provider) {
+static void destroy_codex(Provider* provider) {
     CodexState* state = static_cast<CodexState*>(provider->state);
     request_codex_shutdown(provider);
-    if (state->usage_worker.joinable())
-        state->usage_worker.join();
-    if (state->skills_worker.joinable())
-        state->skills_worker.join();
+    if (state->usage.worker.joinable())
+        state->usage.worker.join();
+    if (state->skills.worker.joinable())
+        state->skills.worker.join();
     provider_runtime_shutdown(&state->runtime);
     delete state;
     delete provider;
