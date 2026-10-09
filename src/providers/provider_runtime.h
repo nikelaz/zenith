@@ -34,6 +34,7 @@ Result provider_runtime_submit(ProviderRuntime* runtime, TurnRequest request);
 bool provider_runtime_cancel_queued(ProviderRuntime* runtime, TurnId turn_id);
 std::vector<Event> provider_runtime_poll_events(ProviderRuntime* runtime);
 void provider_runtime_emit(ProviderRuntime* runtime, const Event* event);
+void provider_runtime_request_shutdown(ProviderRuntime* runtime);
 void provider_runtime_shutdown(ProviderRuntime* runtime);
 
 #endif

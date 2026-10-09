@@ -5,6 +5,7 @@
 #endif
 #include <windows.h>
 #endif
+#include "../base/os.h"
 #include "ui-system.h"
 #include "ui-scale.h"
 #include "button.h"
@@ -38,7 +39,7 @@
 #include <mach-o/dyld.h>
 #endif
 
-namespace {
+
 std::string trim_string(std::string value) {
     const std::size_t start = value.find_first_not_of(" \t\r\n");
     if (start == std::string::npos)
@@ -131,7 +132,7 @@ ImVec4 mcp_status_color(const std::string& status) {
     return ImVec4(0.90f, 0.68f, 0.32f, 1.0f);
 }
 
-std::string path_utf8(const std::filesystem::path& path) {
+static std::string path_utf8(const std::filesystem::path& path) {
     const std::u8string utf8_path = path.generic_u8string();
     return std::string(reinterpret_cast<const char*>(utf8_path.data()), utf8_path.size());
 }
@@ -505,7 +506,7 @@ void set_premiere_theme(const ApplicationState& state) {
 }
 
 
-}
+
 
 UISystem::UISystem(SDL_Window* window, SDL_GPUDevice* gpu_device,
                    ApplicationState& state, std::vector<ProviderPtr>& providers)
@@ -1397,7 +1398,7 @@ void UISystem::render_frame_to_backbuffer() {
                 refresh_color);
             y += panel_size(26.0f);
             if (m_usage_loading[index] && !m_usage_snapshots[index].has_value()) {
-                draw_text("Loading usage information…",
+                draw_text("Loading usage informationâ€¦",
                           ImVec2(window_position.x + panel_size(10.0f), y + panel_size(10.0f)),
                           label_color);
                 y += panel_size(34.0f);
@@ -1673,7 +1674,7 @@ void UISystem::render_mcp_panel() {
                         if (displayed_server.command.empty())
                             ImGui::TextUnformatted("Local");
                         else
-                            ImGui::TextWrapped("Local · %s", displayed_server.command.c_str());
+                            ImGui::TextWrapped("Local Â· %s", displayed_server.command.c_str());
                         if (!displayed_server.arguments.empty()) {
                             const std::string arguments =
                                 mcp_arguments_text(displayed_server.arguments);
@@ -1686,7 +1687,7 @@ void UISystem::render_mcp_panel() {
                         if (displayed_server.url.empty())
                             ImGui::TextUnformatted("HTTP");
                         else
-                            ImGui::TextWrapped("HTTP · %s", displayed_server.url.c_str());
+                            ImGui::TextWrapped("HTTP Â· %s", displayed_server.url.c_str());
                         if (!displayed_server.bearer_token_env_var.empty())
                             ImGui::TextDisabled("Bearer token: %s",
                                 displayed_server.bearer_token_env_var.c_str());
@@ -2288,11 +2289,11 @@ void UISystem::render_settings_contents() {
                                         ? "Skill" : "Command or skill";
                                 if (entry.scope.empty()) {
                                     ImGui::TextDisabled("%s%s", entry_kind,
-                                        entry.enabled ? "" : " · disabled");
+                                        entry.enabled ? "" : " Â· disabled");
                                 } else {
-                                    ImGui::TextDisabled("%s · %s%s", entry_kind,
+                                    ImGui::TextDisabled("%s Â· %s%s", entry_kind,
                                         entry.scope.c_str(),
-                                        entry.enabled ? "" : " · disabled");
+                                        entry.enabled ? "" : " Â· disabled");
                                 }
                                 if (!entry.description.empty())
                                     ImGui::TextWrapped("%s", entry.description.c_str());

@@ -11,7 +11,7 @@
 #include <string>
 #include <utility>
 
-namespace {
+
 struct PendingThreadDelete {
     std::size_t project_index;
     std::size_t thread_index;
@@ -247,7 +247,7 @@ void render_thread_card(ApplicationState& state, std::size_t project_index,
     ImGui::PopID();
     ImGui::Spacing();
 }
-}
+
 
 void open_project_dialog(ApplicationState& state,
                           const std::shared_ptr<FileDialogQueue>& dialog_queue,

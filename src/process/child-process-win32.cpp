@@ -12,8 +12,7 @@
 #endif
 #include <windows.h>
 
-namespace {
-std::filesystem::path executable_path(const std::filesystem::path& path) {
+static std::filesystem::path executable_path(const std::filesystem::path& path) {
     std::error_code error;
     if (!std::filesystem::is_regular_file(path, error) || error)
         return {};
@@ -21,17 +20,17 @@ std::filesystem::path executable_path(const std::filesystem::path& path) {
     return error ? path : resolved;
 }
 
-std::string failure_message(const char* action, const char* process_name,
-                            const char* suffix = "") {
+static std::string failure_message(const char* action, const char* process_name,
+                                   const char* suffix = "") {
     return std::string("Failed to ") + action + " " + process_name + suffix;
 }
 
-void close_if_open(HANDLE handle) {
+static void close_if_open(HANDLE handle) {
     if (handle != nullptr && handle != INVALID_HANDLE_VALUE)
         CloseHandle(handle);
 }
 
-std::wstring quote_argument(const std::wstring& argument) {
+static std::wstring quote_argument(const std::wstring& argument) {
     std::wstring quoted = L"\"";
     std::size_t backslashes = 0;
     for (wchar_t character : argument) {
@@ -52,12 +51,10 @@ std::wstring quote_argument(const std::wstring& argument) {
     return quoted;
 }
 
-std::wstring environment_entry(const ChildProcessEnvironmentVariable& variable) {
+static std::wstring environment_entry(const ChildProcessEnvironmentVariable& variable) {
     return std::filesystem::path(variable.name).wstring() + L"=" +
            variable.value.wstring();
 }
-} // namespace
-
 std::filesystem::path child_process_resolve_executable(
     const std::filesystem::path& executable) {
     if (executable.empty())

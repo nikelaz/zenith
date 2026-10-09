@@ -95,6 +95,16 @@ void provider_runtime_emit(ProviderRuntime* runtime, const Event* event) {
     runtime->events.push_back(*event);
 }
 
+void provider_runtime_request_shutdown(ProviderRuntime* runtime) {
+    {
+        std::lock_guard lock(runtime->request_mutex);
+        runtime->stopping = true;
+        while (!runtime->requests.empty())
+            runtime->requests.pop();
+    }
+    runtime->request_ready.notify_all();
+}
+
 void provider_runtime_shutdown(ProviderRuntime* runtime) {
     {
         std::lock_guard lock(runtime->request_mutex);

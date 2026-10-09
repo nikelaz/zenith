@@ -6,7 +6,8 @@
 Result provider_mcp_run_cli(const std::filesystem::path& executable,
                             const std::vector<std::string>& arguments,
                             const std::filesystem::path& working_directory,
-                            std::string* output) {
+                            std::string* output, std::mutex* process_mutex,
+                            ChildProcess** active_process, bool* shutting_down) {
     if (output == nullptr)
         return result_error("MCP command output is required");
     output->clear();
@@ -21,6 +22,13 @@ Result provider_mcp_run_cli(const std::filesystem::path& executable,
     if (start.status == ResultStatus::Error) {
         child_process_stop(&process);
         return start;
+    }
+
+    {
+        std::lock_guard lock(*process_mutex);
+        *active_process = &process;
+        if (*shutting_down)
+            child_process_terminate(&process);
     }
 
     if (process.input != nullptr) {
@@ -40,6 +48,11 @@ Result provider_mcp_run_cli(const std::filesystem::path& executable,
         child_process_terminate(&process);
     if (output_reader.joinable())
         output_reader.join();
+    {
+        std::lock_guard lock(*process_mutex);
+        if (*active_process == &process)
+            *active_process = nullptr;
+    }
     child_process_stop(&process);
     if (wait.status == ResultStatus::Error)
         return wait;

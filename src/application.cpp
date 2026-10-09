@@ -90,6 +90,10 @@ Result Application::init() {
 }
 
 void Application::deinit() {
+    for (const ProviderPtr& provider : m_providers)
+        if (provider->request_shutdown != nullptr)
+            provider->request_shutdown(provider.get());
+
     if (m_ui) {
         m_ui->deinit();
         m_ui.reset();

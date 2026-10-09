@@ -12,8 +12,7 @@
 #include <unistd.h>
 #include <vector>
 
-namespace {
-std::filesystem::path executable_path(const std::filesystem::path& path) {
+static std::filesystem::path executable_path(const std::filesystem::path& path) {
     std::error_code error;
     if (!std::filesystem::is_regular_file(path, error) || error ||
         access(path.c_str(), X_OK) != 0)
@@ -22,12 +21,10 @@ std::filesystem::path executable_path(const std::filesystem::path& path) {
     return error ? path : resolved;
 }
 
-std::string failure_message(const char* action, const char* process_name,
-                            const char* suffix = "") {
+static std::string failure_message(const char* action, const char* process_name,
+                                   const char* suffix = "") {
     return std::string("Failed to ") + action + " " + process_name + suffix;
 }
-} // namespace
-
 std::filesystem::path child_process_resolve_executable(
     const std::filesystem::path& executable) {
     if (executable.empty())

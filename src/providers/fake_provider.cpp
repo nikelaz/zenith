@@ -1,7 +1,7 @@
 #include "provider_runtime.h"
 #include <utility>
 
-namespace {
+
 struct FakeState {
     ProviderRuntime runtime;
 };
@@ -47,7 +47,12 @@ void destroy_fake(Provider* provider) {
     delete state;
     delete provider;
 }
-} // namespace
+
+void request_fake_shutdown(Provider* provider) {
+    FakeState* state = static_cast<FakeState*>(provider->state);
+    provider_runtime_request_shutdown(&state->runtime);
+}
+
 
 ProviderPtr make_fake_provider() {
     FakeState* state = new FakeState{};
@@ -55,6 +60,7 @@ ProviderPtr make_fake_provider() {
 
     Provider* provider = new Provider{"fake", state, start_fake, submit_fake, respond_fake,
                                       cancel_fake, poll_fake, destroy_fake};
+    provider->request_shutdown = request_fake_shutdown;
     provider->default_model = "fake-model";
     provider->models.push_back({"fake-model", "Fake model", {}, {}, {}, {}});
     return ProviderPtr(provider, destroy_provider);

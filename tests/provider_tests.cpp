@@ -9,7 +9,7 @@
 #include <sqlite3.h>
 #include <thread>
 
-namespace {
+
 std::vector<Event> run(Provider* provider) {
     EXPECT_EQ(provider->start(provider).status, ResultStatus::Ok);
 
@@ -51,9 +51,9 @@ Result codex_success(void*, const TurnRequest* request, ProviderEventSink emit, 
 Result codex_failure(void*, const TurnRequest*, ProviderEventSink, void*) {
     return result_error("codex unavailable");
 }
-} // namespace
 
-namespace {
+
+
 struct RuntimeContext {
     std::mutex mutex;
     std::condition_variable ready;
@@ -115,7 +115,7 @@ bool execute_sql(const std::string& path, const char* sql) {
     sqlite3_close(database);
     return result == SQLITE_OK;
 }
-}
+
 
 TEST(ProviderRuntime, RejectsSubmitBeforeStart) {
     ProviderRuntime runtime;

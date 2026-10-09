@@ -4,7 +4,7 @@
 #include <memory>
 #include <utility>
 
-namespace {
+
 struct StatementDeleter {
     void operator()(sqlite3_stmt* statement) const {
         sqlite3_finalize(statement);
@@ -129,7 +129,7 @@ std::vector<ChatAttachment> deserialize_attachments(const std::string& serialize
     }
     return result;
 }
-}
+
 
 PersistentStore::~PersistentStore() {
     close();

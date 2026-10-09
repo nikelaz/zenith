@@ -168,6 +168,7 @@ using ProviderRemoveMcpServerFn = Result (*)(Provider*, const std::filesystem::p
                                              std::string_view);
 using ProviderSetMcpEnabledFn = Result (*)(Provider*, const std::filesystem::path&,
                                            std::string_view, bool);
+using ProviderRequestShutdownFn = void (*)(Provider*);
 using ProviderDestroyFn = void (*)(Provider*);
 using ProviderEventSink = void (*)(void*, const Event*);
 
@@ -180,6 +181,7 @@ struct Provider {
     ProviderCancelFn cancel;
     ProviderPollFn poll_events;
     ProviderDestroyFn destroy;
+    ProviderRequestShutdownFn request_shutdown = nullptr;
     ProviderRequestUsageFn request_usage = nullptr;
     ProviderPollUsageFn poll_usage = nullptr;
     ProviderRequestSkillsFn request_skills = nullptr;

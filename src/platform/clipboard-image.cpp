@@ -3,7 +3,7 @@
 #include <array>
 #include <string>
 
-namespace {
+
 struct ClipboardImageFormat {
     const char* media_type;
     const char* extension;
@@ -17,7 +17,7 @@ constexpr std::array<ClipboardImageFormat, 6> clipboard_image_formats = {{
     {"image/bmp", ".bmp"},
     {"image/tiff", ".tiff"},
 }};
-}
+
 
 Result read_clipboard_image(ClipboardImage* image) {
     *image = {};

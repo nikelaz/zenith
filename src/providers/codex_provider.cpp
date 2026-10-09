@@ -19,7 +19,7 @@
 
 using Json = nlohmann::json;
 
-namespace {
+
 const std::vector<PermissionOption>& codex_permission_modes() {
     static const std::vector<PermissionOption> modes = {
         {"read-only", "Read only", "Allow reading files without making changes."},
@@ -29,17 +29,17 @@ const std::vector<PermissionOption>& codex_permission_modes() {
     return modes;
 }
 
-std::string string_value(const Json& value, const char* key) {
+static std::string string_value(const Json& value, const char* key) {
     return value.contains(key) && value[key].is_string() ? value[key].get<std::string>()
                                                          : std::string{};
 }
 
-std::string path_utf8(const std::filesystem::path& path) {
+static std::string path_utf8(const std::filesystem::path& path) {
     const std::u8string value = path.generic_u8string();
     return std::string(reinterpret_cast<const char*>(value.data()), value.size());
 }
 
-std::string json_text(const Json& value) {
+static std::string codex_json_text(const Json& value) {
     if (value.is_string())
         return value.get<std::string>();
     if (value.is_null())
@@ -62,6 +62,7 @@ struct CodexState {
     };
     std::map<TurnId, ActiveTurn> active_turns;
     ChildProcess* startup_process = nullptr;
+    ChildProcess* mcp_process = nullptr;
     bool shutting_down = false;
     std::mutex startup_mutex;
     std::condition_variable startup_ready;
@@ -91,7 +92,7 @@ struct CodexState {
     ChildProcess* skills_process = nullptr;
 };
 
-struct StreamContext {
+struct CodexStreamContext {
     ProviderRuntime* runtime;
     const TurnRequest* request;
     bool turn_finished = false;
@@ -99,7 +100,7 @@ struct StreamContext {
     std::string error;
 };
 
-Event make_tool_activity_event(StreamContext* context, const Json& item, bool completed) {
+Event make_tool_activity_event(CodexStreamContext* context, const Json& item, bool completed) {
     const std::string type = string_value(item, "type");
     Event event{EventKind::ToolActivity, context->request->conversation_id,
                 context->request->turn_id};
@@ -126,7 +127,7 @@ Event make_tool_activity_event(StreamContext* context, const Json& item, bool co
     if (type == "fileChange") {
         event.tool_name = "edit";
         if (item.contains("changes"))
-            event.tool_arguments = json_text(item["changes"]);
+            event.tool_arguments = codex_json_text(item["changes"]);
     } else if (type == "webSearch") {
         event.tool_name = "web search";
         event.tool_arguments = string_value(item, "query");
@@ -135,16 +136,16 @@ Event make_tool_activity_event(StreamContext* context, const Json& item, bool co
         if (event.tool_name.empty())
             event.tool_name = type;
         if (item.contains("arguments"))
-            event.tool_arguments = json_text(item["arguments"]);
+            event.tool_arguments = codex_json_text(item["arguments"]);
     }
 
     if (completed) {
         if (item.contains("results"))
-            event.output = json_text(item["results"]);
+            event.output = codex_json_text(item["results"]);
         else if (item.contains("result"))
-            event.output = json_text(item["result"]);
+            event.output = codex_json_text(item["result"]);
         else if (item.contains("contentItems"))
-            event.output = json_text(item["contentItems"]);
+            event.output = codex_json_text(item["contentItems"]);
         else if (type == "fileChange") {
             event.output = string_value(item, "stdout");
             const std::string stderr_output = string_value(item, "stderr");
@@ -155,7 +156,7 @@ Event make_tool_activity_event(StreamContext* context, const Json& item, bool co
             }
         }
         if (event.output.empty() && item.contains("error"))
-            event.output = json_text(item["error"]);
+            event.output = codex_json_text(item["error"]);
         if (item.contains("durationMs") && item["durationMs"].is_number_integer())
             event.duration_ms = item["durationMs"].get<int>();
     }
@@ -176,13 +177,13 @@ Result start_codex_process(const CodexOptions* options, ChildProcess* process,
                                environment, {}, working_directory);
 }
 
-bool write_message(FILE* input, const Json& message) {
+static bool codex_write_message(FILE* input, const Json& message) {
     const std::string serialized = message.dump();
     return fputs(serialized.c_str(), input) >= 0 && fputc('\n', input) != EOF &&
            fflush(input) == 0;
 }
 
-bool read_message(FILE* output, Json* message) {
+static bool codex_read_message(FILE* output, Json* message) {
     std::string line;
     int character = 0;
     while ((character = fgetc(output)) != EOF && character != '\n')
@@ -198,13 +199,13 @@ bool read_message(FILE* output, Json* message) {
     return true;
 }
 
-void emit_stream_event(StreamContext* context, EventKind kind, std::string text) {
+void emit_stream_event(CodexStreamContext* context, EventKind kind, std::string text) {
     const Event event{kind, context->request->conversation_id, context->request->turn_id,
                       std::move(text), {}, {}};
     provider_runtime_emit(context->runtime, &event);
 }
 
-void handle_server_message(StreamContext* context, const Json& message) {
+void handle_server_message(CodexStreamContext* context, const Json& message) {
     if (!message.contains("method"))
         return;
 
@@ -250,11 +251,11 @@ void handle_server_message(StreamContext* context, const Json& message) {
     }
 }
 
-bool wait_for_response(ChildProcess* process, int request_id, StreamContext* stream,
+static bool codex_wait_for_response(ChildProcess* process, int request_id, CodexStreamContext* stream,
                        Json* response, std::string* error) {
     for (;;) {
         Json message;
-        if (!read_message(process->output, &message)) {
+        if (!codex_read_message(process->output, &message)) {
             *error = "Codex app-server closed its output";
             return false;
         }
@@ -327,7 +328,7 @@ UsageSnapshot parse_codex_usage(const Json& result) {
         UsageMetric metric;
         metric.name = "Credits";
         metric.value = credits.value("unlimited", false) ? "Unlimited"
-            : "Balance: " + json_text(credits["balance"]);
+            : "Balance: " + codex_json_text(credits["balance"]);
         snapshot.metrics.push_back(std::move(metric));
     }
     return snapshot;
@@ -347,7 +348,7 @@ bool fetch_codex_usage(CodexState* state, UsageSnapshot* snapshot) {
     }
 
     TurnRequest request;
-    StreamContext stream{&state->runtime, &request, false, false, {}};
+    CodexStreamContext stream{&state->runtime, &request, false, false, {}};
     std::string error;
     const Json initialize = {
         {"method", "initialize"}, {"id", 1},
@@ -355,12 +356,12 @@ bool fetch_codex_usage(CodexState* state, UsageSnapshot* snapshot) {
                                       {"version", "0.1.0"}}}}},
     };
     Json response;
-    const bool success = write_message(process.input, initialize) &&
-        wait_for_response(&process, 1, &stream, nullptr, &error) &&
-        write_message(process.input, Json{{"method", "initialized"},
+    const bool success = codex_write_message(process.input, initialize) &&
+        codex_wait_for_response(&process, 1, &stream, nullptr, &error) &&
+        codex_write_message(process.input, Json{{"method", "initialized"},
                                           {"params", Json::object()}}) &&
-        write_message(process.input, Json{{"method", "account/rateLimits/read"}, {"id", 2}}) &&
-        wait_for_response(&process, 2, &stream, &response, &error);
+        codex_write_message(process.input, Json{{"method", "account/rateLimits/read"}, {"id", 2}}) &&
+        codex_wait_for_response(&process, 2, &stream, &response, &error);
     if (success)
         *snapshot = parse_codex_usage(response.value("result", Json::object()));
 
@@ -416,7 +417,7 @@ std::optional<UsageSnapshot> poll_codex_usage(Provider* provider) {
     return state->usage_snapshot;
 }
 
-std::string conversation_prompt(const TurnRequest* request) {
+static std::string codex_conversation_prompt(const TurnRequest* request) {
     std::string prompt;
     for (const ChatMessage& message : request->history) {
         prompt += message.role == ChatMessageRole::User ? "User: " : "Assistant: ";
@@ -431,7 +432,7 @@ std::string conversation_prompt(const TurnRequest* request) {
 
 Json codex_prompt_content(const TurnRequest* request) {
     Json content = Json::array();
-    content.push_back({{"type", "text"}, {"text", conversation_prompt(request)}});
+    content.push_back({{"type", "text"}, {"text", codex_conversation_prompt(request)}});
     for (const FileReference& reference : request->file_references) {
         content.push_back({
             {"type", "text"},
@@ -492,7 +493,7 @@ std::vector<ModelOption> fetch_codex_models(CodexState* state,
     }
 
     TurnRequest request;
-    StreamContext stream{runtime, &request, false, false, {}};
+    CodexStreamContext stream{runtime, &request, false, false, {}};
     std::string error;
     Json initialize = {
         {"method", "initialize"},
@@ -500,9 +501,9 @@ std::vector<ModelOption> fetch_codex_models(CodexState* state,
         {"params", {{"clientInfo", {{"name", "Zenith"}, {"title", "Zenith"},
                                       {"version", "0.1.0"}}}}},
     };
-    bool success = write_message(process.input, initialize) &&
-                   wait_for_response(&process, 1, &stream, nullptr, &error) &&
-                   write_message(process.input,
+    bool success = codex_write_message(process.input, initialize) &&
+                   codex_wait_for_response(&process, 1, &stream, nullptr, &error) &&
+                   codex_write_message(process.input,
                                  Json{{"method", "initialized"}, {"params", Json::object()}});
     if (success)
         *availability = ProviderAvailability::Available;
@@ -513,10 +514,10 @@ std::vector<ModelOption> fetch_codex_models(CodexState* state,
         if (!cursor.empty())
             params["cursor"] = cursor;
         Json response;
-        success = write_message(process.input,
+        success = codex_write_message(process.input,
                                 Json{{"method", "model/list"}, {"id", request_id},
                                      {"params", params}}) &&
-                  wait_for_response(&process, request_id, &stream, &response, &error);
+                  codex_wait_for_response(&process, request_id, &stream, &response, &error);
         ++request_id;
         if (!success)
             break;
@@ -587,7 +588,7 @@ SkillDiscoverySnapshot fetch_codex_skills(CodexState* state,
     }
 
     TurnRequest request;
-    StreamContext stream{&state->runtime, &request, false, false, {}};
+    CodexStreamContext stream{&state->runtime, &request, false, false, {}};
     std::string error;
     const Json initialize = {
         {"method", "initialize"}, {"id", 1},
@@ -595,18 +596,18 @@ SkillDiscoverySnapshot fetch_codex_skills(CodexState* state,
                                       {"version", "0.1.0"}}}}},
     };
     Json response;
-    bool success = write_message(process.input, initialize) &&
-        wait_for_response(&process, 1, &stream, nullptr, &error) &&
-        write_message(process.input, Json{{"method", "initialized"},
+    bool success = codex_write_message(process.input, initialize) &&
+        codex_wait_for_response(&process, 1, &stream, nullptr, &error) &&
+        codex_write_message(process.input, Json{{"method", "initialized"},
                                           {"params", Json::object()}});
     Json params = {{"cwds", Json::array({path_utf8(working_directory)})}};
     if (force_reload)
         params["forceReload"] = true;
     if (success) {
-        success = write_message(process.input,
+        success = codex_write_message(process.input,
                                 Json{{"method", "skills/list"}, {"id", 2},
                                      {"params", params}}) &&
-                  wait_for_response(&process, 2, &stream, &response, &error);
+                  codex_wait_for_response(&process, 2, &stream, &response, &error);
     }
 
     if (success) {
@@ -744,7 +745,9 @@ std::string mcp_status_text(std::string status) {
 
 Result run_codex_mcp_cli(CodexState* state, const std::filesystem::path& working_directory,
                          const std::vector<std::string>& arguments, std::string* output) {
-    return provider_mcp_run_cli(state->options.executable, arguments, working_directory, output);
+    return provider_mcp_run_cli(state->options.executable, arguments, working_directory,
+                                output, &state->active_mutex, &state->mcp_process,
+                                &state->shutting_down);
 }
 
 Result read_codex_mcp_config(CodexState* state,
@@ -849,22 +852,28 @@ Result query_codex_mcp_status(CodexState* state,
         child_process_stop(&process);
         return started;
     }
+    {
+        std::lock_guard lock(state->active_mutex);
+        state->mcp_process = &process;
+        if (state->shutting_down)
+            child_process_terminate(&process);
+    }
 
     std::string error;
     Json response;
     std::packaged_task<bool()> status_request([&process, &error, &response] {
         TurnRequest request;
-        StreamContext stream{nullptr, &request, false, false, {}};
-        return write_message(process.input, Json{
+        CodexStreamContext stream{nullptr, &request, false, false, {}};
+        return codex_write_message(process.input, Json{
             {"method", "initialize"}, {"id", 1},
             {"params", {{"clientInfo", {{"name", "Zenith"}, {"title", "Zenith"},
                                           {"version", "0.1.0"}}}}},
-        }) && wait_for_response(&process, 1, &stream, nullptr, &error) &&
-            write_message(process.input,
+        }) && codex_wait_for_response(&process, 1, &stream, nullptr, &error) &&
+            codex_write_message(process.input,
                           Json{{"method", "initialized"}, {"params", Json::object()}}) &&
-            write_message(process.input, Json{{"method", "mcpServerStatus/list"}, {"id", 2},
+            codex_write_message(process.input, Json{{"method", "mcpServerStatus/list"}, {"id", 2},
                                              {"params", Json::object()}}) &&
-            wait_for_response(&process, 2, &stream, &response, &error);
+            codex_wait_for_response(&process, 2, &stream, &response, &error);
     });
     std::future<bool> status_future = status_request.get_future();
     std::thread status_thread(std::move(status_request));
@@ -874,6 +883,11 @@ Result query_codex_mcp_status(CodexState* state,
         child_process_terminate(&process);
     const bool success = timed_out ? false : status_future.get();
     status_thread.join();
+    {
+        std::lock_guard lock(state->active_mutex);
+        if (state->mcp_process == &process)
+            state->mcp_process = nullptr;
+    }
     child_process_stop(&process);
     if (timed_out)
         return result_error("Codex MCP status check timed out");
@@ -1053,16 +1067,16 @@ Result run_codex(CodexState* state, const TurnRequest* request,
             child_process_terminate(&process);
     }
 
-    StreamContext stream{runtime, request, false, false, {}};
+    CodexStreamContext stream{runtime, request, false, false, {}};
     std::string error;
     const Json initialize = {
         {"method", "initialize"},
         {"id", 1},
         {"params", {{"clientInfo", {{"name", "Zenith"}, {"title", "Zenith"}, {"version", "0.1.0"}}}}},
     };
-    bool success = write_message(process.input, initialize) &&
-                   wait_for_response(&process, 1, &stream, nullptr, &error) &&
-                   write_message(process.input,
+    bool success = codex_write_message(process.input, initialize) &&
+                   codex_wait_for_response(&process, 1, &stream, nullptr, &error) &&
+                   codex_write_message(process.input,
                                  Json{{"method", "initialized"}, {"params", Json::object()}});
 
     Json thread_params = {
@@ -1071,9 +1085,9 @@ Result run_codex(CodexState* state, const TurnRequest* request,
         thread_params["cwd"] = request->working_directory.string();
     Json thread_response;
     if (success) {
-        success = write_message(process.input,
+        success = codex_write_message(process.input,
                                 Json{{"method", "thread/start"}, {"id", 2}, {"params", thread_params}}) &&
-                  wait_for_response(&process, 2, &stream, &thread_response, &error);
+                  codex_wait_for_response(&process, 2, &stream, &thread_response, &error);
     }
 
     std::string thread_id;
@@ -1111,14 +1125,14 @@ Result run_codex(CodexState* state, const TurnRequest* request,
         }
         if (!request->working_directory.empty())
             turn_params["cwd"] = request->working_directory.string();
-        success = write_message(process.input,
+        success = codex_write_message(process.input,
                                 Json{{"method", "turn/start"}, {"id", 3}, {"params", turn_params}}) &&
-                  wait_for_response(&process, 3, &stream, nullptr, &error);
+                  codex_wait_for_response(&process, 3, &stream, nullptr, &error);
     }
 
     while (success && !stream.turn_finished) {
         Json message;
-        if (!read_message(process.output, &message)) {
+        if (!codex_read_message(process.output, &message)) {
             success = false;
             error = "Codex app-server closed before the turn completed";
             break;
@@ -1245,7 +1259,7 @@ std::vector<Event> poll_codex(Provider* provider) {
     return provider_runtime_poll_events(&state->runtime);
 }
 
-void destroy_codex(Provider* provider) {
+void request_codex_shutdown(Provider* provider) {
     CodexState* state = static_cast<CodexState*>(provider->state);
     {
         std::lock_guard lock(state->active_mutex);
@@ -1259,6 +1273,8 @@ void destroy_codex(Provider* provider) {
             child_process_terminate(state->usage_process);
         if (state->skills_process != nullptr && child_process_running(state->skills_process))
             child_process_terminate(state->skills_process);
+        if (state->mcp_process != nullptr && child_process_running(state->mcp_process))
+            child_process_terminate(state->mcp_process);
     }
     {
         std::lock_guard lock(state->usage_mutex);
@@ -1270,6 +1286,12 @@ void destroy_codex(Provider* provider) {
         state->skills_stopping = true;
     }
     state->skills_ready.notify_all();
+    provider_runtime_request_shutdown(&state->runtime);
+}
+
+void destroy_codex(Provider* provider) {
+    CodexState* state = static_cast<CodexState*>(provider->state);
+    request_codex_shutdown(provider);
     if (state->usage_worker.joinable())
         state->usage_worker.join();
     if (state->skills_worker.joinable())
@@ -1278,7 +1300,7 @@ void destroy_codex(Provider* provider) {
     delete state;
     delete provider;
 }
-} // namespace
+
 
 ProviderPtr make_codex_provider(const CodexOptions* options) {
     CodexState* state = new CodexState{};
@@ -1288,5 +1310,6 @@ ProviderPtr make_codex_provider(const CodexOptions* options) {
 
     Provider* provider = new Provider{"codex",       state,        start_codex, submit_codex,
                                       respond_codex, cancel_codex, poll_codex,  destroy_codex};
+    provider->request_shutdown = request_codex_shutdown;
     return ProviderPtr(provider, destroy_provider);
 }

@@ -30,18 +30,18 @@
 
 using Json = nlohmann::json;
 
-namespace {
-std::string string_value(const Json& value, const char* key) {
+
+static std::string string_value(const Json& value, const char* key) {
     return value.contains(key) && value[key].is_string() ? value[key].get<std::string>()
                                                          : std::string{};
 }
 
-std::string path_utf8(const std::filesystem::path& path) {
+static std::string path_utf8(const std::filesystem::path& path) {
     const std::u8string value = path.generic_u8string();
     return std::string(reinterpret_cast<const char*>(value.data()), value.size());
 }
 
-std::string json_text(const Json& value) {
+static std::string copilot_json_text(const Json& value) {
     if (value.is_string())
         return value.get<std::string>();
     if (value.is_null())
@@ -59,6 +59,7 @@ struct CopilotState {
     };
     std::map<TurnId, ActiveTurn> active_turns;
     ChildProcess* startup_process = nullptr;
+    ChildProcess* mcp_process = nullptr;
     bool shutting_down = false;
     std::mutex startup_mutex;
     bool startup_complete = false;
@@ -90,7 +91,7 @@ struct CopilotState {
     ChildProcess* skills_cli_process = nullptr;
 };
 
-struct StreamContext {
+struct CopilotStreamContext {
     ProviderRuntime* runtime;
     const TurnRequest* request;
     std::filesystem::path working_directory{};
@@ -224,13 +225,13 @@ Result start_copilot_process(const GitHubCopilotOptions* options, const std::str
                                "GitHub Copilot ACP server", {}, error_output_path);
 }
 
-bool write_message(FILE* input, const Json& message) {
+static bool copilot_write_message(FILE* input, const Json& message) {
     const std::string serialized = message.dump();
     return fputs(serialized.c_str(), input) >= 0 && fputc('\n', input) != EOF &&
            fflush(input) == 0;
 }
 
-bool read_message(FILE* output, Json* message) {
+static bool copilot_read_message(FILE* output, Json* message) {
     std::string line;
     int character = 0;
     while ((character = fgetc(output)) != EOF && character != '\n')
@@ -248,7 +249,7 @@ bool read_message(FILE* output, Json* message) {
 
 std::string tool_content_text(const Json& content) {
     if (!content.is_array())
-        return json_text(content);
+        return copilot_json_text(content);
 
     std::string result;
     for (const Json& item : content) {
@@ -259,12 +260,12 @@ std::string tool_content_text(const Json& content) {
         else if (item.contains("text") && item["text"].is_string())
             result += string_value(item, "text");
         else
-            result += json_text(item);
+            result += copilot_json_text(item);
     }
     return result;
 }
 
-Event make_tool_activity_event(StreamContext* context, const Json& update) {
+Event make_tool_activity_event(CopilotStreamContext* context, const Json& update) {
     Event event{EventKind::ToolActivity, context->request->conversation_id,
                 context->request->turn_id};
     event.item_id = string_value(update, "toolCallId");
@@ -276,7 +277,7 @@ Event make_tool_activity_event(StreamContext* context, const Json& update) {
         event.status = event.tool_completed ? "completed" : "inProgress";
 
     if (update.contains("rawInput")) {
-        event.tool_arguments = json_text(update["rawInput"]);
+        event.tool_arguments = copilot_json_text(update["rawInput"]);
         event.text = string_value(update["rawInput"], "command");
         event.cwd = string_value(update["rawInput"], "cwd");
     }
@@ -298,7 +299,7 @@ Event make_tool_activity_event(StreamContext* context, const Json& update) {
     return event;
 }
 
-void emit_text_event(StreamContext* context, EventKind kind, const Json& content) {
+void emit_text_event(CopilotStreamContext* context, EventKind kind, const Json& content) {
     if (context->request == nullptr || string_value(content, "type") != "text")
         return;
     const Event event{kind, context->request->conversation_id, context->request->turn_id,
@@ -325,17 +326,17 @@ bool respond_to_permission(ChildProcess* process, const Json& message) {
         }
     }
     if (option_id.empty())
-        return write_message(process->input,
+        return copilot_write_message(process->input,
                              Json{{"jsonrpc", "2.0"}, {"id", message.value("id", Json())},
                                   {"result", {{"outcome", {{"outcome", "cancelled"}}}}}});
 
-    return write_message(process->input,
+    return copilot_write_message(process->input,
                          Json{{"jsonrpc", "2.0"}, {"id", message.value("id", Json())},
                               {"result", {{"outcome", {{"outcome", "selected"},
                                                         {"optionId", option_id}}}}}});
 }
 
-void handle_server_message(ChildProcess* process, StreamContext* context,
+void handle_server_message(ChildProcess* process, CopilotStreamContext* context,
                            const Json& message) {
     const std::string method = string_value(message, "method");
     if (method == "session/request_permission") {
@@ -382,11 +383,11 @@ void handle_server_message(ChildProcess* process, StreamContext* context,
     }
 }
 
-bool wait_for_response(ChildProcess* process, int request_id, StreamContext* context,
+static bool copilot_wait_for_response(ChildProcess* process, int request_id, CopilotStreamContext* context,
                        Json* response, std::string* error) {
     for (;;) {
         Json message;
-        if (!read_message(process->output, &message)) {
+        if (!copilot_read_message(process->output, &message)) {
             *error = "GitHub Copilot ACP server closed its output";
             return false;
         }
@@ -708,7 +709,7 @@ std::optional<UsageSnapshot> poll_copilot_usage(Provider* provider) {
     return state->usage_snapshot;
 }
 
-bool initialize_copilot(ChildProcess* process, StreamContext* context, Json* response,
+bool initialize_copilot(ChildProcess* process, CopilotStreamContext* context, Json* response,
                         std::string* error) {
     const Json initialize = {
         {"jsonrpc", "2.0"},
@@ -718,8 +719,8 @@ bool initialize_copilot(ChildProcess* process, StreamContext* context, Json* res
                     {"clientCapabilities", {{"session", {{"configOptions", Json::object()}}}}},
                     {"clientInfo", {{"name", "Zenith"}, {"version", "0.1.0"}}}}},
     };
-    return write_message(process->input, initialize) &&
-           wait_for_response(process, 1, context, response, error);
+    return copilot_write_message(process->input, initialize) &&
+           copilot_wait_for_response(process, 1, context, response, error);
 }
 
 std::filesystem::path session_working_directory(const TurnRequest* request,
@@ -734,7 +735,7 @@ std::filesystem::path session_working_directory(const TurnRequest* request,
     return std::filesystem::current_path(*error);
 }
 
-bool create_copilot_session(ChildProcess* process, StreamContext* context,
+bool create_copilot_session(ChildProcess* process, CopilotStreamContext* context,
                             const std::filesystem::path& working_directory, Json* response,
                             std::string* error) {
     const Json create = {
@@ -743,8 +744,8 @@ bool create_copilot_session(ChildProcess* process, StreamContext* context,
         {"method", "session/new"},
         {"params", {{"cwd", path_utf8(working_directory)}}},
     };
-    return write_message(process->input, create) &&
-           wait_for_response(process, 2, context, response, error);
+    return copilot_write_message(process->input, create) &&
+           copilot_wait_for_response(process, 2, context, response, error);
 }
 
 void append_model_options(const Json& options, std::vector<ModelOption>* models) {
@@ -809,7 +810,7 @@ bool discover_copilot_models(CopilotState* state, ProviderRuntime* runtime,
     child_process_ignore_sigpipe();
 
     ChildProcess process;
-    StreamContext context{runtime, nullptr};
+    CopilotStreamContext context{runtime, nullptr};
     std::string error;
     *availability = ProviderAvailability::Unavailable;
     Result result = start_copilot_process(&state->options, {}, {}, &process);
@@ -997,7 +998,7 @@ SkillDiscoverySnapshot fetch_copilot_skills(
             child_process_terminate(&process);
     }
 
-    StreamContext context{nullptr, nullptr};
+    CopilotStreamContext context{nullptr, nullptr};
     context.working_directory = working_directory;
     std::string error;
     bool success = initialize_copilot(&process, &context, nullptr, &error);
@@ -1085,7 +1086,7 @@ std::vector<SkillDiscoverySnapshot> poll_copilot_skills(Provider* provider) {
     return updates;
 }
 
-void publish_copilot_skills(CopilotState* state, const StreamContext& context) {
+void publish_copilot_skills(CopilotState* state, const CopilotStreamContext& context) {
     if (!context.available_commands_received)
         return;
     Json skill_list;
@@ -1122,7 +1123,7 @@ void initialize_github_copilot(void* context, ProviderRuntime*) {
     state->startup_ready.notify_all();
 }
 
-std::string conversation_prompt(const TurnRequest* request) {
+static std::string copilot_conversation_prompt(const TurnRequest* request) {
     std::string prompt;
     for (const ChatMessage& message : request->history) {
         prompt += message.role == ChatMessageRole::User ? "User: " : "Assistant: ";
@@ -1137,7 +1138,7 @@ std::string conversation_prompt(const TurnRequest* request) {
 
 Json copilot_prompt_content(const TurnRequest* request, bool embedded_context) {
     Json content = Json::array();
-    content.push_back({{"type", "text"}, {"text", conversation_prompt(request)}});
+    content.push_back({{"type", "text"}, {"text", copilot_conversation_prompt(request)}});
     for (const FileReference& reference : request->file_references) {
         content.push_back({
             {"type", "text"},
@@ -1230,7 +1231,7 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
             child_process_terminate(&process);
     }
 
-    StreamContext context{runtime, request};
+    CopilotStreamContext context{runtime, request};
     std::string error;
     std::string stage = "initialize";
     bool embedded_context = false;
@@ -1285,11 +1286,11 @@ Result run_github_copilot(CopilotState* state, const TurnRequest* request,
                         {"prompt", copilot_prompt_content(request, embedded_context)}}},
         };
         Json response;
-        success = write_message(process.input, prompt);
+        success = copilot_write_message(process.input, prompt);
         if (!success)
             error = "Failed to write the GitHub Copilot ACP prompt request";
         if (success)
-            success = wait_for_response(&process, 3, &context, &response, &error);
+            success = copilot_wait_for_response(&process, 3, &context, &response, &error);
         if (success) {
             const Json prompt_result = response.value("result", Json::object());
             if (!prompt_result.is_object() || !prompt_result.contains("stopReason")) {
@@ -1541,7 +1542,8 @@ Result run_copilot_mcp_cli(CopilotState* state,
                            const std::vector<std::string>& arguments,
                            std::string* output) {
     return provider_mcp_run_cli(state->options.executable, arguments,
-                                working_directory, output);
+                                working_directory, output, &state->active_mutex,
+                                &state->mcp_process, &state->shutting_down);
 }
 
 Result read_copilot_mcp_servers(CopilotState* state,
@@ -1748,7 +1750,7 @@ std::vector<Event> poll_github_copilot(Provider* provider) {
     return provider_runtime_poll_events(&state->runtime);
 }
 
-void destroy_github_copilot(Provider* provider) {
+void request_github_copilot_shutdown(Provider* provider) {
     CopilotState* state = static_cast<CopilotState*>(provider->state);
     {
         std::lock_guard lock(state->active_mutex);
@@ -1765,6 +1767,8 @@ void destroy_github_copilot(Provider* provider) {
         if (state->skills_cli_process != nullptr &&
             child_process_running(state->skills_cli_process))
             child_process_terminate(state->skills_cli_process);
+        if (state->mcp_process != nullptr && child_process_running(state->mcp_process))
+            child_process_terminate(state->mcp_process);
     }
     {
         std::lock_guard lock(state->usage_mutex);
@@ -1776,6 +1780,12 @@ void destroy_github_copilot(Provider* provider) {
         state->skills_stopping = true;
     }
     state->skills_ready.notify_all();
+    provider_runtime_request_shutdown(&state->runtime);
+}
+
+void destroy_github_copilot(Provider* provider) {
+    CopilotState* state = static_cast<CopilotState*>(provider->state);
+    request_github_copilot_shutdown(provider);
     if (state->usage_worker.joinable())
         state->usage_worker.join();
     if (state->skills_worker.joinable())
@@ -1784,7 +1794,7 @@ void destroy_github_copilot(Provider* provider) {
     delete state;
     delete provider;
 }
-} // namespace
+
 
 ProviderPtr make_github_copilot_provider(const GitHubCopilotOptions* options) {
     CopilotState* state = new CopilotState{};
@@ -1796,5 +1806,6 @@ ProviderPtr make_github_copilot_provider(const GitHubCopilotOptions* options) {
                                       submit_github_copilot, respond_github_copilot,
                                       cancel_github_copilot, poll_github_copilot,
                                       destroy_github_copilot};
+    provider->request_shutdown = request_github_copilot_shutdown;
     return ProviderPtr(provider, destroy_provider);
 }

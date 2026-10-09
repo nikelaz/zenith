@@ -17,7 +17,7 @@
 #include <string_view>
 #include <utility>
 
-namespace {
+
 constexpr float chat_component_spacing = 13.0f;
 constexpr float chat_line_height_ratio = 1.5f;
 bool has_chat_component = false;
@@ -1609,7 +1609,7 @@ std::string provider_command_prompt(std::string prompt,
     return prompt;
 }
 
-}
+
 
 void render_chat_panel(ApplicationState& state, std::vector<ProviderPtr>& providers,
                        ChatPanelState& panel_state, TurnId& next_turn_id,

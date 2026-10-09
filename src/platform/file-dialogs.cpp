@@ -6,7 +6,7 @@
 #include <string>
 #include <utility>
 
-namespace {
+
 struct FileDialogCallbackData {
     std::shared_ptr<FileDialogQueue> queue;
     FileDialogPurpose purpose;
@@ -47,7 +47,7 @@ void SDLCALL file_dialog_callback(void* userdata, const char* const* filelist, i
         std::fprintf(stderr, "Zenith: failed to store file dialog result\n");
     }
 }
-}
+
 
 void show_file_dialog(const std::shared_ptr<FileDialogQueue>& queue,
                       FileDialogPurpose purpose, SDL_Window* window,
