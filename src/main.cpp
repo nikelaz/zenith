@@ -1,23 +1,15 @@
-#define SDL_MAIN_HANDLED
 #include <SDL3/SDL_main.h>
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
+#include <string>
+
 #include "application.h"
 #include "base/result.h"
 #include "platform/message-box.h"
-#include <string>
 
-#ifdef _WIN32
-int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
-#else
-int main() {
-#endif
+int main(int argc, char* argv[]) {
+    (void)argc;
+    (void)argv;
+
     Application app;
-    SDL_SetMainReady();
 
     Result app_init_result = app.init();
     if (app_init_result.status == ResultStatus::Error) {
