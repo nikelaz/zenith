@@ -5,7 +5,9 @@
 #include <chrono>
 #include <condition_variable>
 #include <filesystem>
+#include <fstream>
 #include <gtest/gtest.h>
+#include <iterator>
 #include <mutex>
 #include <sqlite3.h>
 #include <thread>
@@ -400,3 +402,143 @@ TEST(CodexProvider, ReportsExecutionFailure) {
     EXPECT_EQ(events[0].kind, EventKind::TurnFailed);
     EXPECT_EQ(events[0].text, "codex unavailable");
 }
+
+Result claude_success(void*, const TurnRequest* request, ProviderEventSink emit, void* context) {
+    EXPECT_EQ(request->prompt, "hello");
+    const Event delta{EventKind::AssistantTextDelta, request->conversation_id,
+                      request->turn_id, "Claude answer", {}, {}};
+    emit(context, &delta);
+    return result_ok();
+}
+
+Result claude_failure(void*, const TurnRequest*, ProviderEventSink, void*) {
+    return result_error("claude unavailable");
+}
+
+TEST(ClaudeCodeProvider, ExecutesRequestAndEmitsResponse) {
+    ClaudeCodeOptions options;
+    options.execute = claude_success;
+    auto provider = make_claude_code_provider(&options);
+    const auto events = run(provider.get());
+    ASSERT_EQ(events.size(), 2u);
+    EXPECT_EQ(events[0].kind, EventKind::AssistantTextDelta);
+    EXPECT_EQ(events[0].text, "Claude answer");
+    EXPECT_EQ(events[1].kind, EventKind::TurnCompleted);
+    EXPECT_FALSE(provider->models.empty());
+    EXPECT_EQ(provider->default_model, "default");
+}
+
+TEST(ClaudeCodeProvider, ReportsExecutionFailure) {
+    ClaudeCodeOptions options;
+    options.execute = claude_failure;
+    auto provider = make_claude_code_provider(&options);
+    const auto events = run(provider.get());
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].kind, EventKind::TurnFailed);
+    EXPECT_EQ(events[0].text, "claude unavailable");
+}
+
+#if !defined(_WIN32)
+class FakeClaudeCli {
+public:
+    explicit FakeClaudeCli(const std::string& output) {
+        m_directory = std::filesystem::temp_directory_path() /
+            ("zenith-claude-cli-" + std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()));
+        std::filesystem::create_directories(m_directory / "config");
+        std::ofstream(m_directory / "output.jsonl") << output;
+        std::ofstream(executable()) <<
+            "#!/bin/sh\n"
+            "if [ \"$1\" = \"--version\" ]; then echo '2.0.0 (Claude Code)'; exit 0; fi\n"
+            "printf '%s\\n' \"$@\" > '" + (m_directory / "arguments.txt").string() + "'\n"
+            "cat > '" + (m_directory / "input.jsonl").string() + "'\n"
+            "cat '" + (m_directory / "output.jsonl").string() + "'\n";
+        std::filesystem::permissions(executable(), std::filesystem::perms::owner_all);
+    }
+    ~FakeClaudeCli() {
+        std::error_code error;
+        std::filesystem::remove_all(m_directory, error);
+    }
+    std::filesystem::path executable() const { return m_directory / "claude"; }
+    std::filesystem::path config() const { return m_directory / "config"; }
+    std::string read(const char* name) const {
+        std::ifstream file(m_directory / name);
+        return std::string(std::istreambuf_iterator<char>(file), {});
+    }
+private:
+    std::filesystem::path m_directory;
+};
+
+TEST(ClaudeCodeProvider, TranslatesStreamJsonOutput) {
+    FakeClaudeCli cli(
+        R"({"type":"system","subtype":"init","session_id":"s1","slash_commands":["review","plugin:skill"]})" "\n"
+        R"({"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Considering."}},"parent_tool_use_id":null})" "\n"
+        R"({"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Running "}},"parent_tool_use_id":null})" "\n"
+        R"({"type":"assistant","message":{"content":[{"type":"text","text":"Running "},{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"echo zen"}}]},"parent_tool_use_id":null})" "\n"
+        R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"zen","is_error":false}]},"parent_tool_use_id":null})" "\n"
+        R"({"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"utilization":0.25,"resetsAt":1792279800},"seven_day":{"utilization":0.5,"resetsAt":1792476000}}}})" "\n"
+        R"({"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}},"parent_tool_use_id":null})" "\n"
+        R"({"type":"result","subtype":"success","is_error":false,"result":"Running done"})" "\n");
+    ClaudeCodeOptions options;
+    options.executable = cli.executable();
+    options.config_directory = cli.config();
+    auto provider = make_claude_code_provider(&options);
+    const auto events = run(provider.get());
+
+    ASSERT_EQ(events.size(), 6u);
+    EXPECT_EQ(events[0].kind, EventKind::AssistantReasoningDelta);
+    EXPECT_EQ(events[0].text, "Considering.");
+    EXPECT_EQ(events[1].kind, EventKind::AssistantTextDelta);
+    EXPECT_EQ(events[1].text, "Running ");
+    EXPECT_EQ(events[2].kind, EventKind::ToolActivity);
+    EXPECT_EQ(events[2].item_id, "tool-1");
+    EXPECT_EQ(events[2].text, "echo zen");
+    EXPECT_TRUE(events[2].is_terminal);
+    EXPECT_FALSE(events[2].tool_completed);
+    EXPECT_EQ(events[3].kind, EventKind::ToolActivity);
+    EXPECT_TRUE(events[3].tool_completed);
+    EXPECT_EQ(events[3].output, "zen");
+    EXPECT_EQ(events[3].exit_code, 0);
+    EXPECT_EQ(events[4].kind, EventKind::AssistantTextDelta);
+    EXPECT_EQ(events[4].text, "\n\ndone");
+    EXPECT_EQ(events[5].kind, EventKind::TurnCompleted);
+
+    const std::string arguments = cli.read("arguments.txt");
+    EXPECT_NE(arguments.find("stream-json"), std::string::npos);
+    EXPECT_EQ(arguments.find("--model"), std::string::npos);
+    EXPECT_NE(cli.read("input.jsonl").find("\"text\":\"hello\""), std::string::npos);
+
+    provider->request_usage(provider.get());
+    const std::optional<UsageSnapshot> usage = provider->poll_usage(provider.get());
+    ASSERT_TRUE(usage.has_value());
+    ASSERT_EQ(usage->metrics.size(), 2u);
+    EXPECT_EQ(usage->metrics[0].period, "5 hours");
+    EXPECT_EQ(usage->metrics[0].remaining, 75.0);
+    EXPECT_EQ(usage->metrics[1].period, "7 days");
+    EXPECT_EQ(usage->metrics[1].remaining, 50.0);
+
+    std::vector<SkillDiscoverySnapshot> skills;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (skills.empty() && std::chrono::steady_clock::now() < deadline) {
+        skills = provider->poll_skills(provider.get());
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_EQ(skills.size(), 1u);
+    ASSERT_EQ(skills[0].entries.size(), 2u);
+    EXPECT_EQ(skills[0].entries[0].invocation, "/plugin:skill");
+    EXPECT_EQ(skills[0].entries[1].invocation, "/review");
+}
+
+TEST(ClaudeCodeProvider, ReportsFailedResult) {
+    FakeClaudeCli cli(
+        R"({"type":"result","subtype":"success","is_error":true,"result":"Invalid API key"})" "\n");
+    ClaudeCodeOptions options;
+    options.executable = cli.executable();
+    options.config_directory = cli.config();
+    auto provider = make_claude_code_provider(&options);
+    const auto events = run(provider.get());
+    ASSERT_EQ(events.size(), 1u);
+    EXPECT_EQ(events[0].kind, EventKind::TurnFailed);
+    EXPECT_EQ(events[0].text, "Invalid API key");
+}
+#endif
