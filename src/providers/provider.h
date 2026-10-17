@@ -224,8 +224,17 @@ struct GitHubCopilotOptions {
     void* execute_context = nullptr;
 };
 
+struct ClaudeCodeOptions {
+    std::filesystem::path executable = "claude";
+    std::filesystem::path config_directory;
+    std::string default_model = "default";
+    Result (*execute)(void*, const TurnRequest*, ProviderEventSink, void*) = nullptr;
+    void* execute_context = nullptr;
+};
+
 ProviderPtr make_fake_provider();
 ProviderPtr make_codex_provider(const CodexOptions* options = nullptr);
 ProviderPtr make_github_copilot_provider(const GitHubCopilotOptions* options = nullptr);
+ProviderPtr make_claude_code_provider(const ClaudeCodeOptions* options = nullptr);
 
 #endif
